@@ -1,0 +1,16 @@
+# Public, tool-neutral reference profile for the codex-astrator payload.
+# Named roles keep their own explicit settings in payload/agents/*.toml.
+
+# Root / orchestrator
+model = "gpt-6-astra"
+model_reasoning_effort = "low"
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 3
+
+[features]
+multi_agent = true
+
+# Each named role's model, effort, and access are authoritative in its
+# payload/agents/*.toml file.

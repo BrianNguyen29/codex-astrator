@@ -1,0 +1,29 @@
+name: Validate payload
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Parse payload TOML
+        shell: python
+        run: |
+          import pathlib
+          import tomllib
+
+          for path in pathlib.Path("payload").rglob("*.toml"):
+              with path.open("rb") as handle:
+                  tomllib.load(handle)
+          with pathlib.Path("profiles/reference.toml").open("rb") as handle:
+              tomllib.load(handle)
+      - name: Validate source layout
+        run: python scripts/doctor.py --source .
+      - name: Run focused tests
+        run: python -m unittest discover -s tests -p "test_*.py"
