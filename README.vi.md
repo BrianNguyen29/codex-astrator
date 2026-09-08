@@ -1,89 +1,155 @@
 # Codex Astrator
 
-Codex Astrator là payload công khai, đã loại bỏ dữ liệu cá nhân, cho quy trình
-Codex ưu tiên ủy quyền. Kho cung cấp một preset tham chiếu với root GPT-6 Astra
-và sáu vai trò trung tính cho công việc thường, triển khai phức tạp, khám phá,
-kiểm thử, nghiên cứu và review độc lập. Tính sẵn có của model phụ
-thuộc host và tài khoản, không được dự án đảm bảo.
+**Payload orchestration ưu tiên ủy quyền, có thể review cho Codex.**
 
-Kho này chứa hướng dẫn nguồn và trình cài Python nhỏ. Nó không cài Codex,
-model, credential, plugin hay package bên thứ ba. Tài liệu tiếng Anh ở
-[README.md](README.md); hướng dẫn chi tiết nằm trong thư mục [docs](docs/).
+Codex Astrator cung cấp cho project Codex một mô hình root/child rõ ràng, sáu
+vai trò được đặt tên và trình cài Python theo nguyên tắc xem trước trước khi
+ghi. Ranh giới ủy quyền, thiết lập model và phạm vi ghi nằm trong các file có
+thể kiểm tra và quản lý bằng version control. Đây là source distribution đã
+được làm sạch, không phải dịch vụ hosted.
 
-## Cài đặt an toàn
+[![Validate](https://github.com/BrianNguyen29/codex-astrator/actions/workflows/validate.yml/badge.svg)](https://github.com/BrianNguyen29/codex-astrator/actions/workflows/validate.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Apache License 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-Yêu cầu Python 3.11 trở lên. Từ thư mục checkout, xem trước cài đặt cho một
-project:
+[English](README.md) · [Tiếng Việt](README.vi.md)
+
+## Vì sao dùng Codex Astrator?
+
+- Xác định rõ root chịu trách nhiệm diễn giải, phân quyền, tích hợp, nghiệm
+  thu và báo cáo cuối.
+- Điều hướng triển khai thường ngày, recovery khó, khám phá, nghiên cứu,
+  kiểm thử và review độc lập đến các role có access mode minh bạch.
+- Xem kế hoạch cài đặt trước khi thay đổi project đích, đồng thời bảo toàn các
+  thiết lập nằm ngoài path do payload quản lý.
+- Giữ lớp orchestration công khai, tool-neutral, không chứa credential, dữ liệu
+  session hay cấu hình gắn với máy cụ thể.
+
+## Thành phần
 
 ```text
-python scripts/install.py install --scope project --target PATH
+payload/
+  agents/                         sáu role TOML có tên
+  skills/astra-orchestrator/      quy tắc ủy quyền và điều hướng
+  instructions/                   hướng dẫn orchestration project/global
+profiles/reference.toml           một reference preset công khai
+docs/                             kiến trúc, cài đặt, an toàn và giới hạn
+scripts/install.py                CLI cài/cập nhật và gỡ cài đặt
+scripts/doctor.py                 bộ kiểm tra payload và TOML tĩnh
+tests/                            test installer tập trung
 ```
 
-Lệnh `install` mặc định chỉ dry-run. Chỉ thêm `--apply` sau khi xem các path sẽ
-thay đổi:
+Payload có thể cài đặt tách biệt với `AGENTS.md` dành cho contributor của
+repository này: file đó điều chỉnh đóng góp tại đây; instruction trong payload
+điều chỉnh project Codex đích sau khi cài.
 
-```text
-python scripts/install.py install --scope project --target PATH --apply
+## Reference preset
+
+Repository cung cấp một reference preset duy nhất. Preset bật multi-agent và
+cho phép tối đa ba child thread trong mỗi session. Hãy xác nhận model và tính
+năng được host, tài khoản đích hỗ trợ.
+
+| Role | Model | Effort | Access | Trách nhiệm |
+| --- | --- | --- | --- | --- |
+| Root | `gpt-6-astra` | `low` | theo host | Quyết định, tích hợp, xác minh |
+| `explorer` | `gpt-5.6-luna` | `low` | read-only | Tìm path, flow và test |
+| `worker` | `gpt-5.6-luna` | `xhigh` | workspace-write | Triển khai thường ngày có giới hạn |
+| `complex_worker` | `gpt-5.6-sol` | `medium` | workspace-write | Invariant chưa chắc chắn, persistence, concurrency, rollback, recovery |
+| `tester` | `gpt-5.6-luna` | `medium` | workspace-write | Tái hiện và xác minh hành vi |
+| `researcher` | `gpt-5.6-luna` | `medium` | read-only | Trả lời câu hỏi kỹ thuật có giới hạn |
+| `reviewer` | `gpt-6-astra` | `low` | read-only | Đánh giá độc lập các rủi ro đáng kể |
+
+## Bắt đầu nhanh
+
+Yêu cầu Python 3.11 trở lên.
+
+```bash
+git clone https://github.com/BrianNguyen29/codex-astrator.git
+cd codex-astrator
 ```
 
-Với cài đặt global, dùng `--scope global` và đặt target là thư mục home mong
-muốn. Global ghi `.codex/config.toml`, `.codex/AGENTS.md`,
-`.codex/agents/`, `.agents/skills/`; project ghi `.codex/`, `.agents/` và
-`AGENTS.md` tại root project. Dùng `--source PATH` nếu không tự phát hiện được
-root của kho.
+Xem trước cài đặt theo project. Lệnh mặc định chỉ đọc:
 
-File đã tồn tại không bị thay thế ngầm; các cấu hình không thuộc payload được
-bảo toàn. Khi dry-run báo collision, cần chỉ rõ `--replace-existing` cùng với
-`--apply`. Xem [docs/installation.md](docs/installation.md)
-và [docs/permissions.md](docs/permissions.md).
-
-Với bản cài đặt có manifest phiên bản an toàn hiện tại, mọi file được quản lý
-phải còn khớp hash đã ghi trước khi lập kế hoạch cập nhật. `--replace-existing`
-không bỏ qua kiểm tra drift. Installer chụp trạng thái manifest và mọi đích liên
-quan rồi kiểm tra lại ngay trước khi ghi, nhưng không khóa filesystem; tránh
-chạy installer hoặc editor khác trong lúc `--apply`.
-
-Nếu phiên bản đã cài có bộ vai trò được quản lý khác, installer sẽ từ chối
-nâng cấp kể cả khi dùng `--replace-existing`. Hãy gỡ phiên bản trước, kiểm tra
-các file đã khôi phục, rồi cài phiên bản này.
-
-Manifest dùng phiên bản an toàn cũ không được tự động nâng cấp hoặc gỡ, kể cả
-khi hash hiện tại vẫn khớp. Cả preview và apply đều giữ nguyên file cùng backup
-và yêu cầu người dùng đối chiếu, hòa giải thủ công.
-
-Xem trước hoặc áp dụng gỡ cài đặt:
-
-```text
-python scripts/install.py uninstall --scope project --target PATH
-python scripts/install.py uninstall --scope project --target PATH --apply
-python scripts/install.py --uninstall --scope project --target PATH
+```bash
+python scripts/install.py install --scope project --target "PATH/TO/YOUR_PROJECT"
 ```
 
-`doctor` chỉ kiểm tra file và TOML, không cài đặt:
+Kiểm tra kế hoạch rồi mới áp dụng có chủ đích:
 
-```text
+```bash
+python scripts/install.py install --scope project --target "PATH/TO/YOUR_PROJECT" --apply
+```
+
+Để xem trước cài global, đặt target là thư mục home mong muốn.
+Chỉ thêm `--apply` sau khi kiểm tra phạm vi ảnh hưởng rộng hơn:
+
+```bash
+python scripts/install.py install --scope global --target "PATH/TO/YOUR_HOME"
+```
+
+Dùng `--source PATH` khi chạy installer từ ngoài checkout. Khi gỡ cài đặt,
+hãy xem trước rồi chỉ thêm `--apply` sau khi kiểm tra các path được sở hữu;
+xem đầy đủ contract lệnh trong [Installation](docs/installation.md).
+
+Vòng lặp vận hành là:
+
+`root quyết định → child thực hiện phần việc có giới hạn → bằng chứng → root tích hợp và xác minh`
+
+## An toàn và ranh giới
+
+- File đích đã tồn tại sẽ được báo là collision và không bao giờ tự động bị
+  thay thế. Chỉ dùng `--replace-existing` cùng `--apply` sau khi kiểm tra các
+  path cụ thể.
+- Manifest phiên bản hiện tại từ chối update nếu file được theo dõi đã drift,
+  kể cả khi có `--replace-existing`. Installer snapshot các đích liên quan và
+  kiểm tra lại trước khi ghi, nhưng không khóa filesystem; tránh chỉnh sửa
+  đồng thời trong lúc `--apply`.
+- Manifest safety-version cũ không được tự động nâng cấp hoặc xóa. File và
+  backup vẫn nguyên vẹn cho đến khi đối chiếu thủ công.
+- Khi bộ role được quản lý thay đổi, cần gỡ phiên bản trước, kiểm tra các
+  file đã khôi phục rồi mới cài phiên bản mới.
+- Apply có cơ chế rollback. Nếu ghi hoặc rollback thất bại, transaction backup
+  được giữ lại và có thể cần recovery thủ công.
+- Installer không cài Codex, model, plugin, package hay credential; xác thực,
+  API, publish, deploy, commit và push nằm ngoài ranh giới của nó.
+
+Xem [chi tiết cài đặt và recovery](docs/installation.md) cùng
+[ranh giới quyền](docs/permissions.md).
+
+## Tương thích và xác minh
+
+Source và installer yêu cầu Python 3.11+. [GitHub Actions workflow](.github/workflows/validate.yml)
+trong repository hiện chỉ xác minh trên Windows. Hành vi runtime trên macOS
+và Linux chưa được repository này xác minh; model cụ thể cũng phụ thuộc host và
+tài khoản đích.
+
+Dự án không hứa hẹn tiết kiệm token hay giảm chi phí. Hãy đo workload tiêu
+biểu theo hướng dẫn tại [Token usage](docs/token-usage.md).
+
+Chạy các kiểm tra tập trung từ root repository:
+
+```bash
+python -m unittest discover -s tests -p "test_*.py"
 python scripts/doctor.py --source .
 ```
 
-## Quy trình và giới hạn
+## Tài liệu và đóng góp
 
-Mặc định ủy quyền thực thi và điều tra có nội dung, kể cả thay đổi nhỏ;
-chỉ hội thoại thuần túy được trả lời trực tiếp. Công việc thường dùng một
-worker cho khám phá, chỉnh sửa và kiểm thử tập trung. Công việc có invariant
-chưa chắc chắn, persistence, concurrency, rollback hoặc recovery khó được
-chuyển thẳng cho complex worker. Chỉ thêm explorer, tester hoặc researcher khi
-bằng chứng độc lập thực sự có ích; dùng reviewer read-only cho rủi ro kiến trúc, bảo mật, migration, quyền,
-configuration, policy hoặc compatibility. Tối đa ba child agent hoạt động đồng
-thời, hoặc ít hơn theo giới hạn host; child không tạo child khác.
+- [Architecture](docs/architecture.md) — topology, ownership và routing
+- [Installation](docs/installation.md) — lệnh, mapping, collision và recovery
+- [Permissions](docs/permissions.md) — ranh giới ghi và phê duyệt
+- [Compatibility](docs/compatibility.md) — input hỗ trợ và trạng thái xác minh
+- [Token usage](docs/token-usage.md) — cách đo và giới hạn
+- [Orchestrator skill](payload/skills/astra-orchestrator/SKILL.md) — quy tắc routing đầy đủ
 
-CI hiện chỉ chạy Windows cho đến khi các host khác được kiểm tra. macOS,
-Linux và model availability còn chưa xác minh. Đọc
-[docs/compatibility.md](docs/compatibility.md) và [docs/token-usage.md](docs/token-usage.md).
-Dự án không hứa hẹn tiết kiệm token hay chi phí; hãy tự đo trên workload của
-bạn.
+Hoan nghênh đóng góp. Hãy giữ payload đã được làm sạch, bảo toàn thay đổi
+không liên quan, đồng bộ thiết lập role giữa source và tài liệu, đồng thời giữ
+attribution và modification notice trong [NOTICE](NOTICE).
 
-## Giấy phép
+## Giấy phép và attribution
 
-Kho dùng Apache License 2.0, xem [LICENSE](LICENSE). Một phần material được
-phát triển từ [donvito/codex-astra-luna-orchestrator](https://github.com/donvito/codex-astra-luna-orchestrator)
-theo Apache-2.0; xem [NOTICE](NOTICE) và các modification notice trong payload.
+Phân phối theo [Apache License 2.0](LICENSE). Một phần material orchestration
+được phát triển từ
+[donvito/codex-astra-luna-orchestrator](https://github.com/donvito/codex-astra-luna-orchestrator)
+theo Apache-2.0. Xem [NOTICE](NOTICE) và các modification notice trong các
+payload file dẫn xuất.
