@@ -1,13 +1,3 @@
 codex-astrator
 
-This distribution includes material derived from
-donvito/codex-astra-luna-orchestrator:
-https://github.com/donvito/codex-astra-luna-orchestrator
-
-The upstream material is licensed under the Apache License, Version 2.0. The
-payload and instructions in this repository have been adapted, sanitized, and
-reorganized for the codex-astrator installer. Modified-file notices identify
-the derived files; newly authored repository files are not represented as
-upstream source.
-
-The complete Apache License, Version 2.0 is provided in LICENSE.
+This project is licensed under the Apache License, Version 2.0. See LICENSE.

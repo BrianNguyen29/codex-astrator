@@ -3,8 +3,6 @@ name: astra-orchestrator
 description: Delegation-first Codex coding, configuration, and substantive investigation using bounded neutral roles. Exclude pure conversation needing no investigation.
 ---
 
-<!-- Derived from donvito/codex-astra-luna-orchestrator (Apache-2.0); modified and sanitized for codex-astrator. See NOTICE. -->
-
 # Astra orchestrator
 
 User instructions, repository instructions, and explicit authorization always
@@ -80,6 +78,10 @@ access credentials, or commit unless the user explicitly authorizes that
 operation. Do not infer permission from a local checkout. For destructive or
 overwrite operations, require the applicable explicit approval and prefer a
 dry-run or preview first.
+
+When an instruction blocks an authorized next step, identify its file and
+relevant clause, distinguish an explicit requirement from your interpretation,
+and continue independent authorized work; stop only at the affected boundary.
 
 The root waits for every required child, distinguishes completed work from
 failed or unverified checks, and stops at the assigned repair boundary when

@@ -153,12 +153,8 @@ python scripts/doctor.py --source .
 
 Hoan nghênh đóng góp. Hãy giữ payload đã được làm sạch, bảo toàn thay đổi
 không liên quan, đồng bộ thiết lập role giữa source và tài liệu, đồng thời giữ
-attribution và modification notice trong [NOTICE](NOTICE).
+thông tin giấy phép chính xác.
 
-## Giấy phép và attribution
+## Giấy phép
 
-Phân phối theo [Apache License 2.0](LICENSE). Một phần material orchestration
-được phát triển từ
-[donvito/codex-astra-luna-orchestrator](https://github.com/donvito/codex-astra-luna-orchestrator)
-theo Apache-2.0. Xem [NOTICE](NOTICE) và các modification notice trong các
-payload file dẫn xuất.
+Phân phối theo [Apache License 2.0](LICENSE). Xem [NOTICE](NOTICE).

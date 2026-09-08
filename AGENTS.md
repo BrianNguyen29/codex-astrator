@@ -28,14 +28,17 @@ If ambiguity in my instructions would materially affect the outcome, scope, or r
   payload role files, and documentation.
 - Keep the English and Vietnamese README files aligned for user-visible
   behavior and safety notes.
-- Derived material must retain the upstream attribution and modification notice
-  described in `NOTICE`.
+- Keep project licensing notices accurate and aligned across source and docs.
 - Do not publish, deploy, commit, or push as part of local validation.
 
 ## Focused validation
 
-Use Python 3.11 or newer. Before submitting a change, run the focused tests and
-the installer parser/doctor check from the repository root:
+Use Python 3.11 or newer. Scale validation to the change: docs-only changes
+need checks for relevant links, examples, and formatting; installer or payload
+changes need the focused suite and the existing doctor check below. Repeat or
+broaden checks only when relevant changes, failures, or unresolved concerns
+warrant it. Required CI and release checks remain mandatory. From the
+repository root:
 
 ```text
 python -m unittest discover -s tests -p "test_*.py"

@@ -1,5 +1,3 @@
-<!-- Derived from donvito/codex-astra-luna-orchestrator (Apache-2.0); modified and sanitized for codex-astrator. See NOTICE. -->
-
 # Project orchestration instructions
 
 These instructions are installed as project or global Codex guidance. User

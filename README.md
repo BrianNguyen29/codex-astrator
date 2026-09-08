@@ -154,13 +154,9 @@ python scripts/doctor.py --source .
 - [Orchestrator skill](payload/skills/astra-orchestrator/SKILL.md) — complete routing rules
 
 Contributions are welcome. Keep the payload sanitized, preserve unrelated
-changes, keep role settings synchronized across source and docs, and retain
-the upstream attribution and modification notices in [NOTICE](NOTICE).
+changes, keep role settings synchronized across source and docs, and keep
+project licensing notices accurate.
 
-## License and attribution
+## License
 
-Distributed under the [Apache License 2.0](LICENSE). Portions of the
-orchestration material are derived from
-[donvito/codex-astra-luna-orchestrator](https://github.com/donvito/codex-astra-luna-orchestrator)
-under Apache-2.0. See [NOTICE](NOTICE) and the modification notices in derived
-payload files.
+Distributed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE).

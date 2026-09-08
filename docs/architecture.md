@@ -56,3 +56,26 @@ Read-only roles do not edit. Workers and testers stay within their assigned
 scope. Unrelated edits, credentials, logs, personal paths, and external side
 effects stay out of the payload. The root reports failed, unavailable, and
 unverified checks distinctly.
+
+## Optional per-task completion contract
+
+When a written handoff is useful, the root may state a compact completion
+contract. It is optional, not a ceremony for every task; the template grants
+no permissions and does not force tests, changelog entries, or pull requests.
+
+- **Outcome:** The concrete result that completes the task.
+- **Allowed scope:** The files, subsystem, and side effects in scope.
+- **Required evidence:** Checks or artifacts needed to support completion.
+- **Actions requiring approval:** Mutations or external actions that still
+  need explicit authorization.
+- **Known blockers:** Current limits, missing inputs, or unresolved risks.
+
+For example, a docs-only handoff can stay within one file and scope:
+
+```text
+Outcome: Clarify the installer’s payload destination mapping.
+Allowed scope: docs/architecture.md only.
+Required evidence: Relevant links, examples, and formatting checked; final diff inspected.
+Actions requiring approval: Source changes, publishing, and pull-request creation; this contract grants none.
+Known blockers: Report missing source context instead of expanding the scope.
+```
