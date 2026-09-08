@@ -1,0 +1,41 @@
+name: Bug report
+description: Report a reproducible, non-sensitive problem
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Please remove secrets, credentials, private configuration, logs, and
+        personal paths before submitting. Use SECURITY.md for suspected
+        vulnerabilities.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect?
+      placeholder: Describe the observed and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Give the smallest safe steps or command shape that reproduces it.
+      placeholder: Include a disposable target and sanitized command/output excerpts only.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Python version, operating system, and relevant Codex host/revision.
+      placeholder: Python 3.11, Windows CI, Codex host/revision (no personal paths)
+    validations:
+      required: true
+  - type: checkboxes
+    id: sanitized
+    attributes:
+      label: Safe to share
+      options:
+        - label: I removed secrets, credentials, private configuration, logs, and personal paths.
+          required: true

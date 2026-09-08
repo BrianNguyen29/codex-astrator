@@ -13,9 +13,19 @@ payload paths below the explicit `--target`:
 - project: `.codex/config.toml`, `.codex/agents/`, `.agents/skills/`, and the
   target-root `AGENTS.md`.
 
-The installer does not access credentials, authentication stores, rollout logs,
-or personal session data. It does not install packages, contact a model API,
-publish, deploy, commit, or push.
+The installer does not read authentication stores or use credentials. It does
+not install packages, contact a model API, publish, deploy, commit, or push. It
+may read explicit target configuration/instruction files to merge them and copy
+their prior bytes into local recovery backups; those bytes may contain
+sensitive values.
+
+Apply may also create and maintain installer state below the target-local
+`.codex/.astrator-backups/`, including `.codex/.astrator-backups/.gitignore`
+with a protective `*` rule before any backup bytes are written. This is not a
+project-root `.gitignore`. Unsafe rules, symlinks, and Git-tracked backup
+content fail closed. If Git is unavailable, tracked-content detection is
+unavailable and is not evidence that the backup is untracked. A newly created
+protective `.gitignore` is intentionally retained if an apply rolls back.
 
 ## Approval boundaries
 

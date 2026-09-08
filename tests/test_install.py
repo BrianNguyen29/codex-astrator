@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -57,6 +58,93 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(list(self.target.iterdir()), [])
         self.assertIn("PREVIEW", result.stdout)
+        self.assertIn(".codex/.astrator-backups/.gitignore", result.stdout)
+
+    def test_unmanaged_orchestration_warning_preserves_legacy_content(self) -> None:
+        agents = self.target / "AGENTS.md"
+        legacy = "# Existing policy\nAlways delegate implementation to sub-agents.\n"
+        agents.write_text(legacy, encoding="utf-8")
+
+        preview = self.run_cli("--scope", "project", "--target", str(self.target))
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertIn("WARNING: existing unmanaged orchestration-like instructions", preview.stdout)
+        self.assertIn("does not claim the combined policy is coherent", preview.stdout)
+        self.assertEqual(agents.read_text(encoding="utf-8"), legacy)
+
+        installed = self.install()
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.assertTrue(agents.read_text(encoding="utf-8").startswith(legacy))
+
+    @unittest.skipUnless(shutil.which("git"), "git is required for ignore integration test")
+    def test_sensitive_project_backup_is_ignored_by_git(self) -> None:
+        subprocess.run(["git", "init", "--quiet", str(self.target)], check=True)
+        config = self.target / ".codex" / "config.toml"
+        config.parent.mkdir()
+        secret = b'service_token = "synthetic-secret-do-not-stage"\n'
+        config.write_bytes(secret)
+
+        installed = self.install()
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.assertNotIn("synthetic-secret-do-not-stage", installed.stdout + installed.stderr)
+        manifest = json.loads(
+            (self.target / ".codex" / "astrator-manifest.json").read_text(encoding="utf-8")
+        )
+        config_entry = next(entry for entry in manifest["entries"] if entry["path"] == ".codex/config.toml")
+        backup = self.target.joinpath(*config_entry["backup"].split("/"))
+        self.assertEqual(backup.read_bytes(), secret)
+        ignored = subprocess.run(
+            ["git", "-C", str(self.target), "check-ignore", "--quiet", "--", config_entry["backup"]]
+        )
+        self.assertEqual(ignored.returncode, 0)
+        status = subprocess.run(
+            ["git", "-C", str(self.target), "status", "--short"],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertNotIn(".astrator-backups", status.stdout)
+
+    @unittest.skipUnless(shutil.which("git"), "git is required for tracked-backup safety test")
+    def test_tracked_preexisting_backup_is_refused(self) -> None:
+        subprocess.run(["git", "init", "--quiet", str(self.target)], check=True)
+        tracked = self.target / ".codex" / ".astrator-backups" / "old.bak"
+        tracked.parent.mkdir(parents=True)
+        tracked.write_text("previous secret\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.target), "add", "--force", "--", ".codex/.astrator-backups/old.bak"],
+            check=True,
+        )
+
+        refused = self.install()
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("Git already tracks content", refused.stderr)
+        self.assertEqual(tracked.read_text(encoding="utf-8"), "previous secret\n")
+        self.assertFalse((tracked.parent / ".gitignore").exists())
+
+    def test_unsafe_backup_ignore_is_refused_without_overwrite(self) -> None:
+        ignore = self.target / ".codex" / ".astrator-backups" / ".gitignore"
+        ignore.parent.mkdir(parents=True)
+        ignore.write_text("!*.bak\n", encoding="utf-8")
+
+        refused = self.install()
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("required protective '*' rule", refused.stderr)
+        self.assertEqual(ignore.read_text(encoding="utf-8"), "!*.bak\n")
+
+    def test_backup_directory_symlink_is_refused(self) -> None:
+        outside = self.base / "outside backups"
+        outside.mkdir()
+        state = self.target / ".codex"
+        state.mkdir()
+        try:
+            (state / ".astrator-backups").symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable on this platform")
+
+        refused = self.install()
+        self.assertEqual(refused.returncode, 2)
+        self.assertRegex(refused.stderr, "symlink|path escapes target")
+        self.assertEqual(list(outside.iterdir()), [])
 
     def test_real_profile_existing_final_table_and_uninstall(self) -> None:
         import tomllib
@@ -187,6 +275,59 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("other = 7", result)
         self.assertIn("multi_agent = true # user value", result)
 
+    def test_quoted_table_headers_preserve_paths_comments_and_values(self) -> None:
+        config = self.target / ".codex" / "config.toml"
+        config.parent.mkdir()
+        original = (
+            "# keep this\n"
+            "[projects.'D:\\WorkSpace\\EEG\\eeg.ds004752'] # literal path\n"
+            "keep_literal = 1\n"
+            "[projects.\"D:\\\\WorkSpace\\\\EEG\\\\eeg.ds004753\"] # basic path\n"
+            "keep_basic = 2\n"
+        )
+        config.write_text(original, encoding="utf-8")
+
+        installed = self.install()
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        result = config.read_text(encoding="utf-8")
+        self.assertTrue(result.startswith(original))
+        import tomllib
+        parsed = tomllib.loads(result)
+        self.assertEqual(
+            parsed["projects"][r"D:\WorkSpace\EEG\eeg.ds004752"]["keep_literal"], 1
+        )
+        self.assertEqual(
+            parsed["projects"][r"D:\WorkSpace\EEG\eeg.ds004753"]["keep_basic"], 2
+        )
+        self.assertTrue(parsed["features"]["multi_agent"])
+
+    def test_quoted_equivalent_managed_table_is_replaced_in_place(self) -> None:
+        config = self.target / ".codex" / "config.toml"
+        config.parent.mkdir()
+        original = '["features"]\n# feature note\nmulti_agent = false # user value\n'
+        config.write_text(original, encoding="utf-8")
+
+        preview = self.run_cli("--scope", "project", "--target", str(self.target))
+        self.assertEqual(preview.returncode, 3)
+        replaced = self.install("--replace-existing")
+        self.assertEqual(replaced.returncode, 0, replaced.stderr)
+        result = config.read_text(encoding="utf-8")
+        self.assertIn('["features"]', result)
+        self.assertIn("# feature note", result)
+        self.assertIn("multi_agent = true # user value", result)
+
+    def test_malformed_quoted_table_is_refused_before_mutation(self) -> None:
+        config = self.target / ".codex" / "config.toml"
+        config.parent.mkdir()
+        original = '[projects."D:\\WorkSpace\\EEG"]\nkeep = true\n'
+        config.write_text(original, encoding="utf-8")
+
+        refused = self.install()
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("existing config is invalid TOML", refused.stderr)
+        self.assertEqual(config.read_text(encoding="utf-8"), original)
+        self.assertFalse((self.target / "AGENTS.md").exists())
+
     def test_collision_requires_explicit_replace(self) -> None:
         skill = self.target / ".agents" / "skills" / "astra-orchestrator" / "SKILL.md"
         skill.parent.mkdir(parents=True)
@@ -220,6 +361,56 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(config.read_text(encoding="utf-8"), "# original\n")
         self.assertFalse((self.target / ".codex" / "astrator-manifest.json").exists())
         self.assertFalse((self.target / "AGENTS.md").exists())
+        self.assertEqual(
+            (self.target / ".codex" / ".astrator-backups" / ".gitignore").read_bytes(),
+            b"*\n",
+        )
+
+    @unittest.skipUnless(shutil.which("git"), "git is required for rollback privacy test")
+    def test_rollback_retains_ignore_when_backup_cleanup_is_denied(self) -> None:
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT / "scripts"))
+        import install as installer
+
+        subprocess.run(["git", "init", "--quiet", str(self.target)], check=True)
+        config = self.target / ".codex" / "config.toml"
+        config.parent.mkdir()
+        config.write_text('token = "synthetic-private-value"\n', encoding="utf-8")
+        plan, conflicts, old_manifest, manifest_path, managed_agent_paths, snapshot = installer._build_plan(
+            self.target, "project", self.source, False
+        )
+        self.assertFalse(conflicts)
+        original_unlink = installer.Path.unlink
+
+        def deny_backup_unlink(path: Path, *args, **kwargs) -> None:
+            if path.suffix == ".bak":
+                raise PermissionError("injected backup deletion denial")
+            original_unlink(path, *args, **kwargs)
+
+        installer.Path.unlink = deny_backup_unlink
+        installer._FAIL_AFTER = 3
+        try:
+            with self.assertRaisesRegex(installer.InstallerError, "changes rolled back"):
+                installer._apply_plan(
+                    self.target, "project", plan, old_manifest, manifest_path,
+                    managed_agent_paths, snapshot,
+                )
+        finally:
+            installer.Path.unlink = original_unlink
+            installer._FAIL_AFTER = None
+
+        retained = list((self.target / ".codex" / ".astrator-backups").rglob("*.bak"))
+        self.assertTrue(retained, "deletion-denied recovery bytes must remain protected")
+        self.assertEqual(
+            (self.target / ".codex" / ".astrator-backups" / ".gitignore").read_bytes(),
+            b"*\n",
+        )
+        for backup in retained:
+            relative = backup.relative_to(self.target).as_posix()
+            ignored = subprocess.run(
+                ["git", "-C", str(self.target), "check-ignore", "--quiet", "--", relative]
+            )
+            self.assertEqual(ignored.returncode, 0)
 
     def test_restore_failure_retains_recovery_backups(self) -> None:
         import sys as _sys
@@ -254,6 +445,10 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("rollback is incomplete", str(raised.exception))
         recovery = list((self.target / ".codex" / ".astrator-backups").glob(".txn-*"))
         self.assertTrue(recovery, "transaction backups must remain for manual recovery")
+        self.assertEqual(
+            (self.target / ".codex" / ".astrator-backups" / ".gitignore").read_bytes(),
+            b"*\n",
+        )
         self.assertFalse(manifest_path.exists())
 
     def test_update_rejects_tracked_drift_even_with_replace(self) -> None:

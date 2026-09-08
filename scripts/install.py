@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -29,9 +30,11 @@ MARKER_BEGIN = "# >>> CODEX-ASTRATOR MANAGED BLOCK >>>"
 MARKER_END = "# <<< CODEX-ASTRATOR MANAGED BLOCK <<<"
 MANIFEST_NAME = "astrator-manifest.json"
 BACKUP_DIR_NAME = ".astrator-backups"
+BACKUP_IGNORE_CONTENT = b"*\n"
 MANIFEST_VERSION = 2
 LEGACY_MANIFEST_VERSIONS = {1}
 _FAIL_AFTER = None
+TablePath = tuple[str, ...]
 
 
 class InstallerError(Exception):
@@ -44,13 +47,14 @@ class ConflictError(InstallerError):
 
 @dataclass(frozen=True)
 class ProfileKey:
-    table: str
+    table: TablePath | str
     key: str
     value: Any
 
     @property
     def display(self) -> str:
-        return f"{self.table + '.' if self.table else ''}{self.key}"
+        table = self.table if isinstance(self.table, str) else ".".join(self.table)
+        return f"{table + '.' if table else ''}{self.key}"
 
 
 @dataclass
@@ -70,6 +74,7 @@ class PathSnapshot:
 class PlanSnapshot:
     manifest: PathSnapshot
     destinations: dict[str, PathSnapshot]
+    backup_ignore: PathSnapshot
 
 
 def _sha256(data: bytes) -> str:
@@ -263,8 +268,8 @@ def _format_toml_scalar(value: Any) -> str:
     raise InstallerError(f"profile value is not a supported scalar: {value!r}")
 
 
-_TABLE_RE = re.compile(r"^\s*\[([^\[\]]+)\]\s*(?:#.*)?$")
 _ASSIGN_RE = re.compile(r"^(?P<indent>\s*)(?P<key>[A-Za-z0-9_-]+)(?P<between>\s*=\s*)(?P<value>.*?)(?P<newline>\r?\n)?$")
+_BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def _strip_comment(value: str) -> str:
@@ -288,17 +293,17 @@ def _strip_comment(value: str) -> str:
     return value.rstrip(), ""
 
 
-def _flatten_profile(data: dict[str, Any], table: str = "") -> list[ProfileKey]:
+def _flatten_profile(data: dict[str, Any], table: TablePath = ()) -> list[ProfileKey]:
     keys: list[ProfileKey] = []
     for key, value in data.items():
         if isinstance(value, dict):
-            child = f"{table}.{key}" if table else key
+            child = table + (key,)
             keys.extend(_flatten_profile(value, child))
         elif _toml_scalar(value):
             keys.append(ProfileKey(table, key, value))
         else:
             raise InstallerError(
-                f"profile key {table + '.' if table else ''}{key} is not a scalar; refusing ambiguous merge"
+                f"profile key {'.'.join(table) + '.' if table else ''}{key} is not a scalar; refusing ambiguous merge"
             )
     return keys
 
@@ -313,35 +318,112 @@ def _load_profile(path: Path) -> list[ProfileKey]:
     return _flatten_profile(parsed)
 
 
-def _line_table(line: str) -> str | None:
-    match = _TABLE_RE.match(line.rstrip("\r\n"))
-    if not match:
+def _table_path(table: TablePath | str) -> TablePath:
+    """Normalize the internal table representation while tolerating old callers."""
+    if isinstance(table, tuple):
+        return table
+    return tuple(table.split(".")) if table else ()
+
+
+def _parse_table_path(content: str) -> TablePath:
+    """Parse a single-line TOML dotted table name into decoded key segments."""
+    if not content.strip():
+        raise InstallerError("empty TOML table name")
+    if "'''" in content or '"""' in content:
+        raise InstallerError("multiline TOML table names are unsupported for conservative profile merge")
+    probe = "__codex_astrator_table_probe__"
+    try:
+        parsed = tomllib.loads(f"[{content}]\n{probe} = true\n")
+    except tomllib.TOMLDecodeError as exc:
+        raise InstallerError(f"unsupported TOML table name syntax: [{content}]") from exc
+    components: list[str] = []
+    value: Any = parsed
+    while isinstance(value, dict):
+        if value.get(probe) is True:
+            return tuple(components)
+        if len(value) != 1:
+            break
+        component, value = next(iter(value.items()))
+        components.append(component)
+    raise InstallerError(f"unsupported TOML table name syntax: [{content}]")
+
+
+def _line_table_path(line: str) -> TablePath | None:
+    """Return a decoded table path for a single-line table header."""
+    text = line.rstrip("\r\n")
+    start = len(text) - len(text.lstrip())
+    if start >= len(text) or text[start] != "[":
         return None
-    table = match.group(1).strip()
-    if not table or table.startswith("["):
+    if text.startswith("[[", start):
         raise InstallerError("array-of-table syntax is unsupported for conservative profile merge")
-    # Dotted table names are okay; quoted table names are deliberately not,
-    # because lexical matching would be ambiguous without a full TOML writer.
-    if any(char in table for char in ('"', "'")):
-        raise InstallerError(f"quoted TOML table name is unsupported: [{table}]")
-    return table
+
+    index = start + 1
+    quote: str | None = None
+    escaped = False
+    close = None
+    while index < len(text):
+        char = text[index]
+        if quote is not None:
+            if quote == '"' and escaped:
+                escaped = False
+            elif quote == '"' and char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char in ('"', "'"):
+            quote = char
+        elif char == "]":
+            close = index
+            break
+        index += 1
+    if close is None:
+        raise InstallerError("unsupported multiline or unterminated TOML table header")
+    suffix = text[close + 1:].strip()
+    if suffix and not suffix.startswith("#"):
+        raise InstallerError(f"unsupported TOML table header syntax: {text}")
+    return _parse_table_path(text[start + 1:close])
 
 
-def _scan_assignments(raw: str) -> tuple[list[str], dict[tuple[str, str], list[tuple[int, re.Match[str], Any, str]]], dict[str, Any]]:
+def _line_table(line: str) -> str | None:
+    """Compatibility view of a decoded table path for older internal callers."""
+    table = _line_table_path(line)
+    return ".".join(table) if table is not None else None
+
+
+def _format_toml_key(key: str) -> str:
+    if _BARE_KEY_RE.fullmatch(key):
+        return key
+    return json.dumps(key, ensure_ascii=False)
+
+
+def _format_toml_table(table: TablePath) -> str:
+    return ".".join(_format_toml_key(component) for component in table)
+
+
+def _lookup_table(data: Any, table: TablePath) -> Any:
+    value = data
+    for component in table:
+        if not isinstance(value, dict) or component not in value:
+            return None
+        value = value[component]
+    return value
+
+
+def _scan_assignments(raw: str) -> tuple[list[str], dict[tuple[TablePath, str], list[tuple[int, re.Match[str], Any, str]]], dict[str, Any]]:
     try:
         parsed = tomllib.loads(raw)
     except tomllib.TOMLDecodeError as exc:
         raise InstallerError(f"existing config is invalid TOML: {exc}") from exc
     lines = raw.splitlines(keepends=True)
-    table = ""
-    found: dict[tuple[str, str], list[tuple[int, re.Match[str], Any, str]]] = {}
+    table: TablePath = ()
+    found: dict[tuple[TablePath, str], list[tuple[int, re.Match[str], Any, str]]] = {}
     for number, line in enumerate(lines):
         stripped = line.lstrip()
         if not stripped or stripped.startswith("#"):
             continue
         if stripped.startswith("[["):
             raise InstallerError("array-of-table syntax is unsupported for conservative config merge")
-        parsed_table = _line_table(line)
+        parsed_table = _line_table_path(line)
         if parsed_table is not None:
             table = parsed_table
             continue
@@ -371,20 +453,20 @@ def _merge_profile(raw: bytes, profile: list[ProfileKey], replace_existing: bool
     replacements: dict[int, str] = {}
     additions: dict[int, list[str]] = {}
     new_table_additions: dict[int, list[str]] = {}
-    added_tables: set[str] = set()
+    added_tables: set[TablePath] = set()
     # Locate lexical table ranges for additions.
-    table_ranges: dict[str, tuple[int, int]] = {}
-    current = ""
-    starts: list[tuple[int, str]] = [(0, "")]
+    table_ranges: dict[TablePath, tuple[int, int]] = {}
+    starts: list[tuple[int, TablePath]] = [(0, ())]
     for idx, line in enumerate(lines):
-        table = _line_table(line)
+        table = _line_table_path(line)
         if table is not None:
             starts.append((idx, table))
     for index, (start, table) in enumerate(starts):
         end = starts[index + 1][0] if index + 1 < len(starts) else len(lines)
         table_ranges[table] = (start, end)
     for owned in profile:
-        matches = found.get((owned.table, owned.key), [])
+        owned_table = _table_path(owned.table)
+        matches = found.get((owned_table, owned.key), [])
         if len(matches) > 1:
             raise InstallerError(f"owned key {owned.display} occurs more than once; refusing ambiguous merge")
         if matches:
@@ -406,34 +488,28 @@ def _merge_profile(raw: bytes, profile: list[ProfileKey], replace_existing: bool
             continue
         # A semantically matching quoted/dotted key cannot be edited safely
         # with this lexical writer. Refuse before producing duplicate TOML.
-        table_value: Any = parsed
-        if owned.table:
-            for component in owned.table.split("."):
-                if not isinstance(table_value, dict) or component not in table_value:
-                    table_value = None
-                    break
-                table_value = table_value[component]
+        table_value: Any = _lookup_table(parsed, owned_table)
         if isinstance(table_value, dict) and owned.key in table_value:
             raise InstallerError(f"owned key {owned.display} uses unsupported TOML key syntax")
-        if owned.table not in table_ranges:
+        if owned_table not in table_ranges:
             # A root key can be inserted into the existing root before the
             # first table; otherwise append a new table and scalar key.
-            if owned.table:
+            if owned_table:
                 lines_to_add = []
-                if owned.table not in added_tables:
-                    lines_to_add.append(f"[{owned.table}]\n")
-                    added_tables.add(owned.table)
-                lines_to_add.append(f"{owned.key} = {_format_toml_scalar(owned.value)}\n")
+                if owned_table not in added_tables:
+                    lines_to_add.append(f"[{_format_toml_table(owned_table)}]\n")
+                    added_tables.add(owned_table)
+                lines_to_add.append(f"{_format_toml_key(owned.key)} = {_format_toml_scalar(owned.value)}\n")
                 # Keep newly-created tables after additions to all existing
                 # tables, including when both insertion points are EOF.
                 new_table_additions.setdefault(len(lines), []).extend(lines_to_add)
             else:
-                additions.setdefault(table_ranges.get("", (0, len(lines)))[1], []).append(
-                    f"{owned.key} = {_format_toml_scalar(owned.value)}\n"
+                additions.setdefault(table_ranges.get((), (0, len(lines)))[1], []).append(
+                    f"{_format_toml_key(owned.key)} = {_format_toml_scalar(owned.value)}\n"
                 )
         else:
-            _, end = table_ranges[owned.table]
-            additions.setdefault(end, []).append(f"{owned.key} = {_format_toml_scalar(owned.value)}\n")
+            _, end = table_ranges[owned_table]
+            additions.setdefault(end, []).append(f"{_format_toml_key(owned.key)} = {_format_toml_scalar(owned.value)}\n")
     if conflicts and not replace_existing:
         return raw, conflicts
     merged: list[str] = []
@@ -458,50 +534,35 @@ def _merge_profile(raw: bytes, profile: list[ProfileKey], replace_existing: bool
     # Verify the lexical edit did not accidentally move a key into a different
     # table and that unrelated semantic values survived unchanged.
     for owned in profile:
-        table_value: Any = parsed_result
-        if owned.table:
-            for component in owned.table.split("."):
-                if not isinstance(table_value, dict) or component not in table_value:
-                    raise InstallerError(f"merged config lost owned table {owned.table}")
-                table_value = table_value[component]
+        owned_table = _table_path(owned.table)
+        table_value: Any = _lookup_table(parsed_result, owned_table)
+        if table_value is None and owned_table:
+            raise InstallerError(f"merged config lost owned table {owned.display}")
         if not isinstance(table_value, dict) or table_value.get(owned.key) != owned.value:
             raise InstallerError(f"merged config did not set owned key {owned.display}")
     baseline = copy.deepcopy(parsed)
     for owned in profile:
-        table_value = baseline
-        if owned.table:
-            for component in owned.table.split("."):
-                if not isinstance(table_value, dict):
-                    table_value = None
-                    break
-                table_value = table_value.get(component)
+        table_value = _lookup_table(baseline, _table_path(owned.table))
         if isinstance(table_value, dict):
             table_value.pop(owned.key, None)
     preserved = copy.deepcopy(parsed_result)
     for owned in profile:
-        table_value = preserved
-        if owned.table:
-            for component in owned.table.split("."):
-                if not isinstance(table_value, dict):
-                    table_value = None
-                    break
-                table_value = table_value.get(component)
+        table_value = _lookup_table(preserved, _table_path(owned.table))
         if isinstance(table_value, dict):
             table_value.pop(owned.key, None)
     # Newly introduced owned tables become empty after removing their keys.
     # Remove only these new containers, preserving pre-existing empty tables.
-    for owned in sorted(profile, key=lambda item: item.table.count('.'), reverse=True):
-        if not owned.table:
+    for owned in sorted(profile, key=lambda item: len(_table_path(item.table)), reverse=True):
+        components = _table_path(owned.table)
+        if not components:
             continue
-        components = owned.table.split('.')
         for depth in range(len(components), 0, -1):
-            original = parsed
-            current = preserved
-            for component in components[:depth - 1]:
-                original = original.get(component, {}) if isinstance(original, dict) else {}
-                current = current.get(component, {}) if isinstance(current, dict) else {}
+            original = _lookup_table(parsed, components[:depth - 1])
+            current = _lookup_table(preserved, components[:depth - 1])
             key = components[depth - 1]
-            if isinstance(current, dict) and current.get(key) == {} and key not in original:
+            if isinstance(current, dict) and current.get(key) == {} and (
+                not isinstance(original, dict) or key not in original
+            ):
                 current.pop(key)
     if baseline != preserved:
         raise InstallerError("merged config changed unrelated semantic values")
@@ -541,6 +602,25 @@ def _merge_agents(raw: bytes, instructions: str) -> bytes:
         return (text[:start] + block + text[suffix_start:]).encode("utf-8")
     prefix = "" if not text or text.endswith(("\n", "\r")) else "\n"
     return (text + prefix + block).encode("utf-8")
+
+
+_ORCHESTRATION_RE = re.compile(
+    r"\b(?:delegat(?:e|ion)|sub[- ]?agents?|spawn_agent|multi[- ]agent|orchestrat(?:e|ion|or))\b",
+    re.IGNORECASE,
+)
+
+
+def _has_unmanaged_orchestration(raw: bytes) -> bool:
+    """Flag likely orchestration policy outside our block without interpreting it."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False  # _merge_agents reports the actionable encoding error.
+    start = text.find(MARKER_BEGIN)
+    end = text.find(MARKER_END)
+    if start != -1 and end > start:
+        text = text[:start] + text[end + len(MARKER_END):]
+    return _ORCHESTRATION_RE.search(text) is not None
 
 
 def _resolve_source(source: Path) -> tuple[Path, Path, Path, Path]:
@@ -708,11 +788,54 @@ def _read_instruction(path: Path) -> str:
         raise InstallerError(f"instructions are not UTF-8: {exc}") from exc
 
 
+def _backup_ignore_path(target: Path) -> Path:
+    return _safe_join(target, f".codex/{BACKUP_DIR_NAME}/.gitignore")
+
+
+def _validate_backup_ignore(snapshot: PathSnapshot) -> None:
+    if snapshot.exists and snapshot.content not in (b"*\n", b"*\r\n"):
+        raise InstallerError(
+            f"existing .codex/{BACKUP_DIR_NAME}/.gitignore is not the required protective '*' rule; "
+            "refusing to write backups"
+        )
+
+
+def _reject_tracked_backup_files(target: Path) -> None:
+    """Refuse known tracked backups; .gitignore cannot make tracked bytes private."""
+    git = shutil.which("git")
+    if git is None:
+        return
+    probe = subprocess.run(
+        [git, "-C", str(target), "rev-parse", "--is-inside-work-tree"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if probe.returncode != 0:
+        return
+    tracked = subprocess.run(
+        [git, "-C", str(target), "ls-files", "--", f".codex/{BACKUP_DIR_NAME}"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if tracked.returncode != 0:
+        raise InstallerError("cannot verify whether existing backup files are tracked by Git")
+    if tracked.stdout.strip():
+        raise InstallerError(
+            f"Git already tracks content below .codex/{BACKUP_DIR_NAME}; remove it from the index "
+            "without deleting the recovery copy, then retry"
+        )
+
+
 def _build_plan(target: Path, scope: str, source: Path, replace_existing: bool) -> tuple[list[PlannedFile], list[str], dict[str, Any] | None, Path, list[str], PlanSnapshot]:
     profile_path, agents_root, skills_root, instructions_path = _resolve_source(source)
     profile = _load_profile(profile_path)
     instructions = _read_instruction(instructions_path)
     manifest_path, old_manifest, manifest_snapshot = _load_manifest(target, scope)
+    backup_ignore_snapshot = _snapshot_file(_backup_ignore_path(target))
+    _validate_backup_ignore(backup_ignore_snapshot)
+    _reject_tracked_backup_files(target)
     _require_current_manifest(old_manifest, "install/update")
     installed_snapshots = _validate_installed_files(target, old_manifest) if old_manifest is not None else {}
     agent_files = list(_source_files(agents_root))
@@ -785,15 +908,28 @@ def _build_plan(target: Path, scope: str, source: Path, replace_existing: bool) 
             if old_snapshot.exists:
                 conflicts.append(destination)
             plan.append(PlannedFile(destination, new, "install skill file"))
-    snapshot = PlanSnapshot(manifest_snapshot, destination_snapshots)
+    snapshot = PlanSnapshot(manifest_snapshot, destination_snapshots, backup_ignore_snapshot)
     return plan, sorted(set(conflicts)), old_manifest, manifest_path, source_agent_paths, snapshot
 
 
-def _print_plan(plan: list[PlannedFile], conflicts: list[str], *, apply: bool, replace_existing: bool) -> None:
+def _print_plan(
+    plan: list[PlannedFile],
+    conflicts: list[str],
+    *,
+    apply: bool,
+    replace_existing: bool,
+    protect_backups: bool,
+    unmanaged_orchestration: bool,
+) -> None:
     mode = "APPLY" if apply else "PREVIEW"
-    print(f"{mode}: {len(plan)} file change(s)")
+    print(f"{mode}: {len(plan) + int(protect_backups)} file change(s)")
     for item in plan:
         print(f"  {item.rel}: {item.reason}")
+    if protect_backups:
+        print(f"  .codex/{BACKUP_DIR_NAME}/.gitignore: protect local recovery backups from normal Git staging")
+    if unmanaged_orchestration:
+        print("WARNING: existing unmanaged orchestration-like instructions in AGENTS.md were preserved")
+        print("  review them with the managed block for conflicts; the installer does not claim the combined policy is coherent")
     if conflicts:
         print("CONFLICTS:")
         for conflict in conflicts:
@@ -856,6 +992,10 @@ def _apply_plan(target: Path, scope: str, plan: list[PlannedFile], old_manifest:
     _revalidate_snapshot(manifest_path, snapshot.manifest, label="installer manifest")
     for relative, expected in snapshot.destinations.items():
         _revalidate_snapshot(_safe_join(target, relative), expected, label=relative)
+    backup_ignore = _backup_ignore_path(target)
+    _revalidate_snapshot(backup_ignore, snapshot.backup_ignore, label="backup privacy rule")
+    _validate_backup_ignore(snapshot.backup_ignore)
+    _reject_tracked_backup_files(target)
     if old_manifest is not None:
         _validate_installed_files(target, old_manifest)
     backup_id = uuid.uuid4().hex
@@ -865,7 +1005,11 @@ def _apply_plan(target: Path, scope: str, plan: list[PlannedFile], old_manifest:
     changed: list[tuple[Path, bytes | None]] = []
     transaction_backups: dict[Path, Path] = {}
     entries: list[dict[str, Any]] = []
+    ignore_created = not snapshot.backup_ignore.exists
     try:
+        if ignore_created:
+            # This must precede creation of any file that can contain user bytes.
+            _write_bytes(backup_ignore, BACKUP_IGNORE_CONTENT)
         _ensure_directory(transaction_dir)
         # Back up every destination before the first publication.  Persistent
         # backups are made only for files that have not been installed before.
@@ -1051,7 +1195,19 @@ def main(argv: list[str] | None = None) -> int:
         plan, conflicts, old_manifest, manifest_path, managed_agent_paths, snapshot = _build_plan(
             target, args.scope, source, args.replace_existing
         )
-        _print_plan(plan, conflicts, apply=args.apply, replace_existing=args.replace_existing)
+        agents_rel = ".codex/AGENTS.md" if args.scope == "global" else "AGENTS.md"
+        agents_snapshot = snapshot.destinations[agents_rel]
+        _print_plan(
+            plan,
+            conflicts,
+            apply=args.apply,
+            replace_existing=args.replace_existing,
+            protect_backups=not snapshot.backup_ignore.exists,
+            unmanaged_orchestration=(
+                agents_snapshot.exists
+                and _has_unmanaged_orchestration(agents_snapshot.content or b"")
+            ),
+        )
         if conflicts and (not args.apply or not args.replace_existing):
             return 3
         if not args.apply:

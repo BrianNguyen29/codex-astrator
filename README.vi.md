@@ -14,6 +14,9 @@ thể kiểm tra và quản lý bằng version control. Đây là source distrib
 
 [English](README.md) · [Tiếng Việt](README.vi.md)
 
+> Trạng thái: `v0.1.0` đang được lên kế hoạch và vẫn là pre-release; chưa
+> phát hành.
+
 ## Vì sao dùng Codex Astrator?
 
 - Xác định rõ root chịu trách nhiệm diễn giải, phân quyền, tích hợp, nghiệm
@@ -119,9 +122,12 @@ Xem [chi tiết cài đặt và recovery](docs/installation.md) cùng
 ## Tương thích và xác minh
 
 Source và installer yêu cầu Python 3.11+. [GitHub Actions workflow](.github/workflows/validate.yml)
-trong repository hiện chỉ xác minh trên Windows. Hành vi runtime trên macOS
-và Linux chưa được repository này xác minh; model cụ thể cũng phụ thuộc host và
-tài khoản đích.
+trong repository hiện chỉ kiểm tra parse source, layout và test tập trung trên
+Windows với Python 3.11; workflow không chạy trên Codex host thực. Hành vi
+runtime trên macOS và Linux chưa được repository này xác minh; test preview/apply
+tập trung chỉ dùng target disposable và không bao phủ quyền trên target thực.
+Model cụ thể cũng phụ thuộc host và tài khoản đích. Smoke test tùy chọn chỉ
+dùng project disposable; không kiểm tra role read-only trên file project thực.
 
 Dự án không hứa hẹn tiết kiệm token hay giảm chi phí. Hãy đo workload tiêu
 biểu theo hướng dẫn tại [Token usage](docs/token-usage.md).
@@ -136,10 +142,13 @@ python scripts/doctor.py --source .
 ## Tài liệu và đóng góp
 
 - [Architecture](docs/architecture.md) — topology, ownership và routing
-- [Installation](docs/installation.md) — lệnh, mapping, collision và recovery
+- [Installation](docs/installation.md) — lệnh, mapping, recovery và xử lý sự cố
 - [Permissions](docs/permissions.md) — ranh giới ghi và phê duyệt
-- [Compatibility](docs/compatibility.md) — input hỗ trợ và trạng thái xác minh
+- [Compatibility](docs/compatibility.md) — ma trận và quy trình smoke runtime tùy chọn
 - [Token usage](docs/token-usage.md) — cách đo và giới hạn
+- [Release checklist](docs/release-checklist.md) — cổng pre-release `v0.1.0` dự kiến
+- [Changelog](CHANGELOG.md) — thay đổi đã xác minh và đang chờ
+- [Security](SECURITY.md) — báo cáo lỗ hổng riêng tư và báo cáo an toàn
 - [Orchestrator skill](payload/skills/astra-orchestrator/SKILL.md) — quy tắc routing đầy đủ
 
 Hoan nghênh đóng góp. Hãy giữ payload đã được làm sạch, bảo toàn thay đổi

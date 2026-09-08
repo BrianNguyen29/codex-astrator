@@ -13,6 +13,9 @@ is a sanitized source distribution—not a hosted service.
 
 [English](README.md) · [Tiếng Việt](README.vi.md)
 
+> Status: `v0.1.0` is planned and remains pre-release; it has not been
+> released.
+
 ## Why Codex Astrator?
 
 - Give the root clear ownership of interpretation, authorization, integration,
@@ -119,10 +122,14 @@ See [installation and recovery details](docs/installation.md) and the
 ## Compatibility and verification
 
 The source and installer require Python 3.11+. The checked-in
-[GitHub Actions workflow](.github/workflows/validate.yml) currently validates
-on Windows only. macOS and Linux runtime behavior has not been validated by
-this repository, and named model availability depends on the target host and
-account.
+[GitHub Actions workflow](.github/workflows/validate.yml) validates source
+parsing, layout, and focused tests on Windows with Python 3.11; it does not
+exercise a live Codex host. Focused preview/apply tests use disposable targets;
+real-target permission behavior is not covered. macOS and Linux runtime
+behavior has not been validated by this repository, and named model
+availability depends on the target host and account. The optional smoke
+protocol uses only a disposable project; read-only roles must not be tested
+against real project files.
 
 This project makes no token-savings or cost-reduction promise. Measure
 representative workloads using the guidance in [Token usage](docs/token-usage.md).
@@ -137,10 +144,13 @@ python scripts/doctor.py --source .
 ## Documentation and contribution
 
 - [Architecture](docs/architecture.md) — topology, ownership, and routing
-- [Installation](docs/installation.md) — commands, mapping, collisions, and recovery
+- [Installation](docs/installation.md) — commands, mapping, recovery, and troubleshooting
 - [Permissions](docs/permissions.md) — write and approval boundaries
-- [Compatibility](docs/compatibility.md) — supported inputs and validation status
+- [Compatibility](docs/compatibility.md) — matrix and opt-in runtime smoke protocol
 - [Token usage](docs/token-usage.md) — measurement protocol and limitations
+- [Release checklist](docs/release-checklist.md) — planned `v0.1.0` pre-release gate
+- [Changelog](CHANGELOG.md) — pending and validated changes
+- [Security](SECURITY.md) — private vulnerability reporting and safe reports
 - [Orchestrator skill](payload/skills/astra-orchestrator/SKILL.md) — complete routing rules
 
 Contributions are welcome. Keep the payload sanitized, preserve unrelated

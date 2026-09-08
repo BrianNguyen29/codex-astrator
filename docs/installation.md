@@ -78,6 +78,16 @@ contain local policy. The installer preserves unrelated Codex settings while
 applying its managed values; inspect the plan and preserve settings outside the
 payload's owned paths.
 
+When an apply may create recovery backups, the preview discloses the exact
+target-local `.codex/.astrator-backups/.gitignore` protection. If absent, the
+installer creates that file with a protective `*` rule before writing any
+backup bytes; it does not modify a project-root `.gitignore`. Unsafe rules and
+symlinked backup paths fail closed. Existing backup content tracked by Git also
+fails closed when Git can verify it; without Git, tracked-content detection is
+unavailable and must be treated as such. If an apply rolls back, a newly
+created protective `.gitignore` is intentionally retained; review it with any
+recovery material rather than assuming the backup directory is empty.
+
 An existing current-version installer manifest records the complete source role set separately
 from the files it owns. This lets an identical pre-existing role file remain
 unmanaged and survive uninstall. If a later source contains a different role
@@ -111,3 +121,33 @@ before approving a destructive operation.
 These checks narrow the time-of-check/time-of-use window but do not lock the
 target. An external editor or process can still race after the final check, so
 keep the target quiescent during `--apply`.
+
+## Troubleshooting
+
+- **Collision:** A first install with an existing destination previews a
+  conflict and exits without replacing it. Review the exact path, preserve the
+  local file when appropriate, or rerun with `--replace-existing --apply` only
+  after explicit review. This option does not bypass current-manifest drift
+  checks.
+- **Drift:** If a current-version manifest file is missing, altered, a link, or
+  otherwise fails its recorded hash, install/update and uninstall stop before
+  writing. Reconcile the target with the recorded backup or your intended
+  local content, then inspect a fresh preview; do not delete the manifest to
+  skip the check.
+- **Legacy migration:** A version 1 safety manifest is intentionally blocked.
+  Compare each installed file with its referenced backup, decide what to keep,
+  and remove the legacy manifest only after manual reconciliation. No automatic
+  restore or migration is performed.
+- **Role unavailable:** Model IDs, efforts, and access modes are requests, not
+  host guarantees. Check the target host/account and the execution trace. If a
+  role or model is unavailable, report it and use only a fallback that the
+  caller has explicitly authorized; record the run as unverified otherwise.
+- **Quota or rate limit:** A quota stop is not evidence of installer failure or
+  token savings. Record unavailable measurements as unavailable, retry when
+  permitted, and reduce delegation or concurrency only under the target
+  project's policy. Keep prompts, paths, configs, and logs out of shared
+  reports.
+
+For security reports, use the private-reporting guidance in
+[SECURITY.md](../SECURITY.md). Share sanitized findings only; never attach
+credentials, private configuration, session data, or raw logs.
