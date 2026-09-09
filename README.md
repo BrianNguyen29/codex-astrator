@@ -51,6 +51,11 @@ The repository ships one reference preset. It enables multi-agent operation
 and allows up to three child threads per session. Confirm model availability
 and supported features with the target host and account.
 
+The root preset requests a 400,000-token context window and automatic
+compaction at 250,000 tokens, scoped to total usage. These are client-side
+configuration values; they do not guarantee a server-side input cap or token
+savings. Confirm that the target host supports them.
+
 | Role | Model | Effort | Access | Responsibility |
 | --- | --- | --- | --- | --- |
 | Root | `gpt-6-astra` | `low` | host-defined | Decide, integrate, verify |

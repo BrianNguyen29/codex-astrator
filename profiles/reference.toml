@@ -4,6 +4,9 @@
 # Root / orchestrator
 model = "gpt-6-astra"
 model_reasoning_effort = "low"
+model_context_window = 400000
+model_auto_compact_token_limit = 250000
+model_auto_compact_token_limit_scope = "total"
 
 [agents]
 enabled = true

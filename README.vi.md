@@ -52,6 +52,11 @@ Repository cung cấp một reference preset duy nhất. Preset bật multi-agen
 cho phép tối đa ba child thread trong mỗi session. Hãy xác nhận model và tính
 năng được host, tài khoản đích hỗ trợ.
 
+Preset của root yêu cầu context window 400.000 token và tự động compact ở
+250.000 token, theo tổng usage. Đây là các giá trị cấu hình phía client; chúng
+không bảo đảm giới hạn input phía server hay tiết kiệm token. Hãy xác nhận
+host đích hỗ trợ các giá trị này.
+
 | Role | Model | Effort | Access | Trách nhiệm |
 | --- | --- | --- | --- | --- |
 | Root | `gpt-6-astra` | `low` | theo host | Quyết định, tích hợp, xác minh |

@@ -162,6 +162,9 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(parsed["features"]["other"])
         self.assertNotIn("multi_agent", parsed["agents"])
         self.assertEqual(parsed["model_reasoning_effort"], "low")
+        self.assertEqual(parsed["model_context_window"], 400000)
+        self.assertEqual(parsed["model_auto_compact_token_limit"], 250000)
+        self.assertEqual(parsed["model_auto_compact_token_limit_scope"], "total")
         self.assertEqual(self.install().returncode, 0)
         snapshot = {p: p.read_bytes() for p in self.target.rglob("*") if p.is_file()}
         preview = self.run_cli("uninstall", "--scope", "project", "--target", str(self.target))
@@ -750,6 +753,9 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(actual, expected)
 
     def test_real_repository_installs_exactly_six_agent_profiles(self) -> None:
+        config = self.target / ".codex" / "config.toml"
+        config.parent.mkdir()
+        config.write_text("# keep this setting\nunrelated = 7\n", encoding="utf-8")
         result = subprocess.run(
             [
                 sys.executable, str(INSTALL), "install", "--source", str(ROOT),
@@ -759,6 +765,12 @@ class InstallerTests(unittest.TestCase):
             capture_output=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+        import tomllib
+        parsed = tomllib.loads(config.read_text(encoding="utf-8"))
+        self.assertEqual(parsed["model_context_window"], 400000)
+        self.assertEqual(parsed["model_auto_compact_token_limit"], 250000)
+        self.assertEqual(parsed["model_auto_compact_token_limit_scope"], "total")
+        self.assertEqual(parsed["unrelated"], 7)
         installed = sorted(path.name for path in (self.target / ".codex" / "agents").glob("*.toml"))
         self.assertEqual(installed, [
             "complex_worker.toml", "explorer.toml", "researcher.toml",

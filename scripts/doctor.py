@@ -38,6 +38,9 @@ def _check(source: Path) -> list[str]:
         expected_profile = {
             "model": "gpt-6-astra",
             "model_reasoning_effort": "low",
+            "model_context_window": 400000,
+            "model_auto_compact_token_limit": 250000,
+            "model_auto_compact_token_limit_scope": "total",
             "agents": {"enabled": True, "max_concurrent_threads_per_session": 3},
             "features": {"multi_agent": True},
         }

@@ -63,10 +63,12 @@ model and endpoint under test. The [prompt caching guide](https://developers.ope
 and [GPT-6 Astra model documentation](https://developers.openai.com/api/docs/models/gpt-6-astra)
 describe API behavior that may change by model or release.
 
-Do not target a full context window or encode a hard 260K-token stop; effective
-limits and behavior depend on the model, endpoint, and release. A preset does
-not configure internal Codex API caching, Batch, or Flex controls. Those are
-API/request-environment concerns when supported.
+Do not treat a configured context window or a 250K auto-compaction threshold as
+a guaranteed server-side input cap or a universal hard stop; effective limits
+and behavior depend on the model, endpoint, and release. Preset token settings
+are client configuration requests and do not guarantee token savings. A preset
+does not configure internal Codex API caching, Batch, or Flex controls. Those
+are API/request-environment concerns when supported.
 
 API cost calculators must include cache writes when they are billable. For any
 long-context surcharge, calculate the difference using the same usage in both
