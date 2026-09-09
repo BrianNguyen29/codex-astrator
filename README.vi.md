@@ -141,9 +141,9 @@ Source và installer yêu cầu Python 3.11+. [GitHub Actions workflow](.github/
 trong repository kiểm tra độc lập việc parse source, layout và test tập trung
 trên Windows, Ubuntu và macOS với Python 3.11, cộng thêm một job Ubuntu với
 Python 3.12 (`fail-fast: false`, tổng cộng bốn job). Một [lần chạy đã quan sát
-ở đúng revision `29d0ae1`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34335263659)
-đã pass cả bốn job. Lần chạy đó có trước các thay đổi về quyền file và bảo vệ
-workflow hiện tại; release candidate vẫn cần CI xanh trên chính SHA của nó.
+ở đúng revision hardening `9515d86`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34341342685)
+đã pass cả bốn job. Điều này xác nhận matrix hosted cho commit đó nhưng không
+chứng minh Codex runtime thực tương thích hay hoàn tất các release gate khác.
 Workflow cũng không chạy trên Codex host thực. Test preview/apply tập trung
 chỉ dùng target disposable và không bao phủ quyền trên target thực. Model cụ
 thể phụ thuộc host và tài khoản đích. Smoke test tùy chọn chỉ dùng project

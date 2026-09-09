@@ -141,10 +141,11 @@ The source and installer require Python 3.11+. The checked-in
 [GitHub Actions workflow](.github/workflows/validate.yml) validates source
 parsing, layout, and focused tests independently on Windows, Ubuntu, and macOS
 with Python 3.11, plus one Ubuntu job with Python 3.12
-(`fail-fast: false`, four jobs total). An [observed run at the exact revision
-`29d0ae1`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34335263659)
-passed all four jobs. It predates the current permission and workflow
-hardening; the exact release candidate still needs its own green CI run.
+(`fail-fast: false`, four jobs total). An [observed run at the exact hardening
+revision `9515d86`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34341342685)
+passed all four jobs. This confirms hosted matrix coverage for that commit;
+it does not establish live Codex runtime compatibility or complete the other
+release gates.
 The workflow does not exercise a live Codex host. Focused
 preview/apply tests use disposable targets; real-target permission behavior is
 not covered. Named model availability depends on the target host and account.

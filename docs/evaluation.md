@@ -53,15 +53,15 @@ local; inspect before sharing. Use `report --help` for optional measured fields.
 
 ## Pilot budget and current evidence
 
-At revision `96cbc6a`, local acceptance on Windows/Python 3.12.8 and
-WSL Ubuntu/Python 3.12.3 passed all 67 unittest tests. Static doctor,
+At revision `9515d86`, local acceptance on Windows/Python 3.12.8 and
+WSL Ubuntu/Python 3.12.3 passed all 84 unittest tests (Windows skipped 21
+POSIX-only checks; WSL skipped one Windows-only check). Static doctor,
 compilation, local Markdown file targets, and `git diff --check` also passed.
-The [hosted CI run for 96cbc6a](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34314915552)
-passed all three Python 3.11 jobs (Windows, Ubuntu, macOS). This is evidence
-for that revision only, not for subsequent edits, runtime routing, or release
-readiness. The later [four-job CI run for 29d0ae1](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34335263659)
-also passed Ubuntu/Python 3.12. It predates the current permission hardening
-and expanded corpus; those changes still need their own hosted run.
+The [hosted four-job run for `9515d86`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34341342685)
+passed Windows/Python 3.11, Ubuntu/Python 3.11, Ubuntu/Python 3.12, and
+macOS/Python 3.11. This is evidence for that revision only, not runtime
+routing or release readiness. Earlier runs for `96cbc6a` and `29d0ae1` remain
+historical evidence and do not supersede the exact current revision.
 
 For the subsequent recovery-guard and migration working-tree changes, the
 full suite passed 71 tests on both Windows and WSL Ubuntu. After adding the
@@ -118,10 +118,10 @@ Luna/Sol/Astra comparisons remain deferred. Do not spend the comparison budget
 until in-session behavior checks and required trace fields are available.
 The full workflow benchmark was not run after the policy blocker. The earlier
 [CI run for b16999d](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34311240409)
-failed macOS tests; the successful `96cbc6a` run above covers the subsequent
-fixes, but is not runtime evidence. Exact release-revision archive checks and
-release publication remain pending. The smoke attempt itself made no global
-install, commit, push, or tag.
+failed macOS tests; the successful `9515d86` run above covers the current
+source matrix, but is not runtime evidence. Exact release-revision archive
+checks and release publication remain pending. The smoke attempt itself made
+no global install, commit, push, or tag.
 
 Follow-up read-only diagnostics on 2026-09-09 reported Windows sandbox
 readiness as `ready`, without requesting setup or starting a model turn.
