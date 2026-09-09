@@ -42,7 +42,10 @@ def _check(source: Path) -> list[str]:
             "model_auto_compact_token_limit": 250000,
             "model_auto_compact_token_limit_scope": "total",
             "agents": {"enabled": True, "max_concurrent_threads_per_session": 3},
-            "features": {"multi_agent": True},
+            "features": {
+                "multi_agent": True,
+                "context_management": {"experimental_mode": True},
+            },
         }
         if profile_data != expected_profile:
             raise InstallerError("reference profile does not match the single supported preset")

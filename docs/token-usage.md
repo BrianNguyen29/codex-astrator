@@ -66,9 +66,11 @@ describe API behavior that may change by model or release.
 Do not treat a configured context window or a 250K auto-compaction threshold as
 a guaranteed server-side input cap or a universal hard stop; effective limits
 and behavior depend on the model, endpoint, and release. Preset token settings
-are client configuration requests and do not guarantee token savings. A preset
-does not configure internal Codex API caching, Batch, or Flex controls. Those
-are API/request-environment concerns when supported.
+are client configuration requests and do not guarantee token savings. The
+preset's experimental context-management opt-in is separate from internal
+Codex/API prompt caching: it does not configure prompt-caching, Batch, or Flex
+controls. Those remain API/request-environment concerns when supported, and
+context-management behavior depends on client and account eligibility.
 
 API cost calculators must include cache writes when they are billable. For any
 long-context surcharge, calculate the difference using the same usage in both

@@ -52,6 +52,12 @@ Repository cung cấp một reference preset duy nhất. Preset bật multi-agen
 cho phép tối đa ba child thread trong mỗi session. Hãy xác nhận model và tính
 năng được host, tài khoản đích hỗ trợ.
 
+Preset cũng bật tùy chọn experimental context-management bằng table
+`[features.context_management]` và `experimental_mode = true`. Client OpenAI
+mặc định tắt tùy chọn này; hãy xác minh client và tài khoản đích đủ điều kiện
+trước khi dựa vào nó. Context management experimental không bảo đảm hiệu năng
+hay tiết kiệm token.
+
 Preset của root yêu cầu context window 400.000 token và tự động compact ở
 250.000 token, theo tổng usage. Đây là các giá trị cấu hình phía client; chúng
 không bảo đảm giới hạn input phía server hay tiết kiệm token. Hãy xác nhận

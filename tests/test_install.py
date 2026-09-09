@@ -755,7 +755,11 @@ class InstallerTests(unittest.TestCase):
     def test_real_repository_installs_exactly_six_agent_profiles(self) -> None:
         config = self.target / ".codex" / "config.toml"
         config.parent.mkdir()
-        config.write_text("# keep this setting\nunrelated = 7\n", encoding="utf-8")
+        config.write_text(
+            "# keep this setting\nunrelated = 7\n"
+            "[features.context_management]\nunrelated_nested = true\n",
+            encoding="utf-8",
+        )
         result = subprocess.run(
             [
                 sys.executable, str(INSTALL), "install", "--source", str(ROOT),
@@ -771,6 +775,8 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(parsed["model_auto_compact_token_limit"], 250000)
         self.assertEqual(parsed["model_auto_compact_token_limit_scope"], "total")
         self.assertEqual(parsed["unrelated"], 7)
+        self.assertTrue(parsed["features"]["context_management"]["experimental_mode"])
+        self.assertTrue(parsed["features"]["context_management"]["unrelated_nested"])
         installed = sorted(path.name for path in (self.target / ".codex" / "agents").glob("*.toml"))
         self.assertEqual(installed, [
             "complex_worker.toml", "explorer.toml", "researcher.toml",

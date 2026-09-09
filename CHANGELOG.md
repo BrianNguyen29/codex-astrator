@@ -16,6 +16,10 @@ All notable changes are recorded here. The project is preparing a planned
 - The reference preset now requests a 400,000-token context window and total-
   usage automatic compaction at 250,000 tokens. These remain client-side
   settings and do not guarantee a server-side input cap or token savings.
+- The reference preset now opts into experimental context management with
+  `[features.context_management].experimental_mode = true`. OpenAI clients
+  keep this opt-in off by default; client/account eligibility must be verified,
+  and no performance guarantee is implied.
 - Install previews warn when existing orchestration-like `AGENTS.md` content is
   unmanaged and preserve that content; the preview makes clear that the
   combined policy is not claimed to be coherent.

@@ -15,5 +15,8 @@ max_concurrent_threads_per_session = 3
 [features]
 multi_agent = true
 
+[features.context_management]
+experimental_mode = true
+
 # Each named role's model, effort, and access are authoritative in its
 # payload/agents/*.toml file.
