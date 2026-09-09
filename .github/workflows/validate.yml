@@ -5,13 +5,25 @@ on:
   pull_request:
 
 jobs:
-  windows:
-    runs-on: windows-latest
+  validate:
+    name: Validate (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Start with one supported Python version; broaden only after the
+        # current matrix has produced evidence on every host.
+        os:
+          - windows-latest
+          - ubuntu-latest
+          - macos-latest
+        python-version:
+          - "3.11"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
       - name: Parse payload TOML
         shell: python
         run: |

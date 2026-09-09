@@ -13,6 +13,17 @@ All notable changes are recorded here. The project is preparing a planned
 
 ### Added
 
+- The validation workflow now defines independent Windows, Ubuntu, and macOS
+  jobs with Python 3.11 only and `fail-fast: false`; hosted matrix results
+  remain pending until that workflow runs after a push.
+- Read-only installer `status` and `verify` checks document installation state
+  without exposing file contents, hashes, or backup names. Mutating applies use
+  a per-target cooperative lock while preserving snapshot checks for external
+  processes.
+- Added a bounded, local evaluation plan and offline harness notes covering a
+  fixed four-task set, initial two-to-three repeats, declared budgets, and
+  sanitized optional reports. Routing experiments do not create new presets.
+
 - The reference preset now requests a 400,000-token context window and total-
   usage automatic compaction at 250,000 tokens. These remain client-side
   settings and do not guarantee a server-side input cap or token savings.

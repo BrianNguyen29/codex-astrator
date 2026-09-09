@@ -1,9 +1,10 @@
 # Installation
 
 Install/update and uninstall precheck file hashes before changing files and
-attempt rollback after a publication failure. An I/O or rollback failure can
-still require manual recovery from retained backups. Do not run concurrent
-installers or edit destination files while an apply operation is running.
+attempt rollback after a write failure. An I/O or rollback failure can still
+require manual recovery from retained backups. Mutating applies coordinate with
+other cooperating installer processes, but the target should remain quiescent
+while an apply operation is running.
 
 The installer is a local Python command-line tool. It does not download
 dependencies, install Codex, select a model, modify authentication, or publish
@@ -52,6 +53,28 @@ The `doctor` command performs file-existence and TOML parsing checks only:
 ```text
 python scripts/doctor.py --source .
 ```
+
+To inspect an installed state without changing it, use the read-only checks:
+
+```text
+python scripts/install.py status --scope project|global --target PATH
+python scripts/install.py verify --scope project|global --target PATH
+```
+
+Both commands reject `--apply`, `--replace-existing`, and `--source`. Each
+prints one fixed summary line containing the state, scope, manifest status,
+managed-file and backup counts, and role-profile count; it never prints file
+contents, hashes, or backup names. `status` exits `0` for a healthy or absent
+installation (for example, a target with no manifest) and `2` for invalid or
+legacy state, drift, or a missing required managed/backup file. `verify`
+requires a current healthy installation and exits `0` only for that state;
+absent installation, legacy or invalid state, drift, or a missing required
+file exits `2`.
+
+Both checks validate the manifest schema and path allowlist, installed-file
+hashes, original-backup hashes, backup privacy rule, and declared role/profile
+consistency. They do not establish live model availability, runtime role
+execution, or that the installed source is current.
 
 Use `python scripts/install.py --help` for the installed CLI's complete option
 set. The command names above are the stable contract documented by this
@@ -119,8 +142,14 @@ payload identifies as owned for the selected scope. Verify the target and plan
 before approving a destructive operation.
 
 These checks narrow the time-of-check/time-of-use window but do not lock the
-target. An external editor or process can still race after the final check, so
-keep the target quiescent during `--apply`.
+target against every process. Mutating `install --apply` and `uninstall
+--apply` acquire a per-target cooperative lock at
+`.codex/.astrator.lock` before manifest/source/destination validation and hold
+it through commit or rollback. Preview, `status`, and `verify` never create or
+acquire this lock. The lock contains no user configuration and may remain as a
+harmless coordination marker. It serializes only cooperating installer
+processes; an editor or other process can still race after the final snapshot
+check, so keep the target quiescent during `--apply`.
 
 ## Troubleshooting
 

@@ -41,6 +41,56 @@ token and time measurements, record total root-plus-children outcomes such as
 success, rework, and escalations; a faster run with more rework is not an
 equivalent result.
 
+## Bounded evaluation plan
+
+See the [local harness and recorded pilot evidence](evaluation.md) for exact
+commands, execution safety, and the distinction between structural and
+behavioral checks.
+
+Use a fixed four-task set for the initial comparison:
+
+1. a one-file task;
+2. a multi-file feature;
+3. a cross-component bug; and
+4. a research-heavy task.
+
+Run each condition two or three times initially, with the repetition count and
+per-run/total token, time, and quota budget declared before execution. Stop at
+the budget and record an incomplete or unavailable measurement; never infer a
+successful outcome from a budget stop. Keep prompts, repository revisions,
+account conditions, and acceptance checks fixed across the orchestration and
+root-only baseline conditions.
+
+After the initial results, use the task bottleneck to guide a second-stage
+model-routing experiment (for example, a role or effort that addresses the
+observed bottleneck). Keep the existing preset and child cap unchanged; this
+is an evaluation of routing, not a reason to add another public preset. Record
+the reason for each routing change and compare rework and acceptance outcomes
+as well as token usage.
+
+Keep harness output and raw reports local by default. A sanitized report may be
+shared optionally after removing source paths, credentials, configuration,
+manifests, backups, prompts, and private logs. If the host does not expose a
+field, record `unavailable` rather than `0`; do not treat a locally generated
+report as evidence of hosted CI or live runtime compatibility.
+
+The repository's offline harness uses a fixed task catalog in
+`evals/tasks.json`; it does not provide an arbitrary command runner. Its stable
+workflow is:
+
+```text
+python scripts/evaluate.py prepare --output EVAL_DIR --repeats 2
+python scripts/evaluate.py check --workspace EVAL_DIR --output CHECK.json
+python scripts/evaluate.py report --input CHECK.json --output REPORT.json
+```
+
+The default `check` path is structural-only. An optional execution flag, when
+exposed by the installed harness, is documented by `python scripts/evaluate.py
+check --help`; it is reserved for fixed behavioral checks on the three
+code tasks. The offline research-review task remains structural-only. The
+harness does not make network calls or run arbitrary shell commands. A local
+report is an optional sanitized artifact, not hosted-CI or live-runtime proof.
+
 Interpret cached and uncached input separately. More parallel children may
 reduce elapsed time while increasing context work; the root also remains in the
 loop for integration. Lowering the child cap or skipping delegation for a

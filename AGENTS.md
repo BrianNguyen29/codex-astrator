@@ -45,6 +45,8 @@ python -m unittest discover -s tests -p "test_*.py"
 python scripts/doctor.py --source .
 ```
 
-The CI workflow is intentionally Windows-only until cross-host execution has
-been validated. Report checks that could not run instead of treating them as
-passing.
+The CI workflow is configured for independent Windows, Ubuntu, and macOS jobs
+with Python 3.11 only. This is source-level matrix coverage, not evidence that
+a live Codex host or runtime is compatible; hosted results must be verified
+after the workflow runs. Report checks that could not run instead of treating
+them as passing.

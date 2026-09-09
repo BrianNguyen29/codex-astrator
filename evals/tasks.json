@@ -1,0 +1,195 @@
+{
+  "schema_version": 1,
+  "default_repeats": 2,
+  "tasks": [
+    {
+      "id": "onefilebug",
+      "kind": "one-file-bug",
+      "prompt": "Fix the add function so it returns the sum of its two integer arguments. Keep the public function name unchanged.",
+      "behavior": {
+        "kind": "function",
+        "source": "src/calculator.py",
+        "function": "add",
+        "cases": [
+          {"args": [2, 3], "expected": 5},
+          {"args": [-4, 9], "expected": 5},
+          {"args": [0, 0], "expected": 0},
+          {"args": [-4, -9], "expected": -13},
+          {"args": [7, 3], "expected": 10}
+        ]
+      },
+      "files": [
+        {
+          "path": "src/calculator.py",
+          "content": "def add(left: int, right: int) -> int:\n    return left - right\n"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "add-uses-plus",
+          "type": "contains",
+          "path": "src/calculator.py",
+          "value": "return left + right"
+        },
+        {
+          "id": "old-subtraction-removed",
+          "type": "not_contains",
+          "path": "src/calculator.py",
+          "value": "return left - right"
+        }
+      ]
+    },
+    {
+      "id": "multifilefeature",
+      "kind": "multi-file-feature",
+      "prompt": "Add a small slug feature. Implement slugify in src/slug.py: lowercase, remove punctuation, and join whitespace-separated words with hyphens (Hello, World! becomes hello-world; surrounding whitespace is removed). Make format_label in src/report.py return '<title> [<slug>]'. Preserve the original label text.",
+      "behavior": {
+        "kind": "slug",
+        "slug_cases": [
+          {"input": "Hello, World!", "expected": "hello-world"},
+          {"input": "  Two   Words  ", "expected": "two-words"}
+        ],
+        "label_cases": [
+          {"input": "Hello, World!", "expected": "Hello, World! [hello-world]"}
+        ]
+      },
+      "files": [
+        {
+          "path": "src/slug.py",
+          "content": "import re\n\ndef slugify(text: str) -> str:\n    raise NotImplementedError\n"
+        },
+        {
+          "path": "src/report.py",
+          "content": "from .slug import slugify\n\ndef format_label(title: str) -> str:\n    return title\n"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "slug-function-implemented",
+          "type": "not_contains",
+          "path": "src/slug.py",
+          "value": "raise NotImplementedError"
+        },
+        {
+          "id": "slug-normalizes-whitespace",
+          "type": "contains",
+          "path": "src/slug.py",
+          "value": "re.sub"
+        },
+        {
+          "id": "report-calls-slugify",
+          "type": "contains",
+          "path": "src/report.py",
+          "value": "slugify(title)"
+        },
+        {
+          "id": "report-keeps-label",
+          "type": "contains",
+          "path": "src/report.py",
+          "value": "title"
+        }
+      ]
+    },
+    {
+      "id": "statebug",
+      "kind": "cross-component-state-bug",
+      "prompt": "Correct the Session state transitions: start moves idle to running and stop moves running to idle. Do not add network or subprocess behavior.",
+      "behavior": {
+        "kind": "state",
+        "source": "src/state.py",
+        "controller": "src/controller.py",
+        "cases": [
+          {"operation": "start", "expected": "running"},
+          {"operation": "stop", "expected": "idle"},
+          {"operation": "run_once", "expected": "running"}
+        ]
+      },
+      "files": [
+        {
+          "path": "src/state.py",
+          "content": "class Session:\n    def __init__(self) -> None:\n        self.state = \"idle\"\n\n    def start(self) -> None:\n        self.state = \"idle\"\n\n    def stop(self) -> None:\n        self.state = \"running\"\n"
+        },
+        {
+          "path": "src/controller.py",
+          "content": "from .state import Session\n\ndef run_once(session: Session) -> str:\n    session.start()\n    return session.state\n"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "start-enters-running",
+          "type": "contains",
+          "path": "src/state.py",
+          "value": "def start(self) -> None:\n        self.state = \"running\""
+        },
+        {
+          "id": "stop-enters-idle",
+          "type": "contains",
+          "path": "src/state.py",
+          "value": "def stop(self) -> None:\n        self.state = \"idle\""
+        },
+        {
+          "id": "controller-uses-session",
+          "type": "contains",
+          "path": "src/controller.py",
+          "value": "session.start()"
+        },
+        {
+          "id": "no-subprocess-import",
+          "type": "not_contains",
+          "path": "src/state.py",
+          "value": "subprocess"
+        }
+      ]
+    },
+    {
+      "id": "offline-research-review",
+      "kind": "offline-research-review",
+      "prompt": "Write REVIEW.md using only the supplied facts. Include findings and evidence, state that the review is offline, and do not browse or invent facts.",
+      "behavior": {
+        "kind": "structural-only"
+      },
+      "files": [
+        {
+          "path": "facts.md",
+          "content": "# Supplied facts\n\n- The installer performs preview-first file operations.\n- The payload does not install models, plugins, or credentials.\n- Runtime compatibility is not evaluated by the static doctor check.\n"
+        },
+        {
+          "path": "REVIEW.md",
+          "content": ""
+        }
+      ],
+      "invariants": [
+        {
+          "id": "review-has-findings",
+          "type": "contains",
+          "path": "REVIEW.md",
+          "value": "## Findings"
+        },
+        {
+          "id": "review-has-evidence",
+          "type": "contains",
+          "path": "REVIEW.md",
+          "value": "## Evidence"
+        },
+        {
+          "id": "review-states-offline",
+          "type": "contains",
+          "path": "REVIEW.md",
+          "value": "offline"
+        },
+        {
+          "id": "review-uses-supplied-fact",
+          "type": "contains",
+          "path": "REVIEW.md",
+          "value": "preview-first"
+        },
+        {
+          "id": "review-no-browsing-claim",
+          "type": "contains",
+          "path": "REVIEW.md",
+          "value": "No browsing"
+        }
+      ]
+    }
+  ]
+}

@@ -44,12 +44,26 @@ backups are left for explicit manual reconciliation.
 
 The installer cannot decide which local policy should win. It preserves
 settings outside the mapped paths; review managed-value conflicts and resolve
-them in the target project.
-Project trust and any host-specific permission prompts remain the user's
-responsibility.
-The installer does not acquire an exclusive filesystem lock. Avoid concurrent
-installers and external edits during `--apply`; a process can still race after
-the final snapshot check.
+them in the target project. Project trust and any host-specific permission
+prompts remain the user's responsibility.
+
+Mutating `install --apply` and `uninstall --apply` acquire a per-target,
+cooperative OS lock at `.codex/.astrator.lock` before manifest/source/destination
+validation and hold it through commit or rollback. Preview, `status`, and
+`verify` never create or acquire the lock. The lock contains no configuration or
+user content and may remain as a harmless marker. It serializes only
+cooperating installer processes; it is not a security boundary and cannot stop
+an external editor or process. Existing snapshots still detect many
+non-cooperating edits, but cannot eliminate the residual race after the final
+check. This applies equally to global targets, where drift in managed files
+must still be reconciled explicitly.
+
+`status` is read-only and exits successfully for healthy or absent state;
+`verify` is read-only and succeeds only for a current healthy installation.
+Both reject mutating flags and validate manifest structure, path allowlists,
+installed/original-backup hashes, backup privacy, and role/profile consistency;
+neither proves runtime model availability or source freshness. See
+[Installation](installation.md) for the exact output and exit-status contract.
 
 ## Agent permissions
 

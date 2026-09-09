@@ -2,6 +2,12 @@
 
 This is a release plan, not a release announcement. `v0.1.0` is not released;
 do not create or push its tag until the checks below are complete.
+Every checkbox below is intentionally planned and unchecked for this checkout.
+Source inspection or local checks do not count as hosted CI, runtime, tag, or
+archive reproducibility evidence.
+
+Current local implementation and pilot evidence is recorded in
+[evaluation](evaluation.md); it does not complete the gates below.
 
 ## Source and reproducibility
 
@@ -20,8 +26,16 @@ do not create or push its tag until the checks below are complete.
 
 ## Behavior and compatibility
 
+- [ ] Push the candidate revision and observe all three independent workflow
+      jobs: Windows, Ubuntu, and macOS, each with Python 3.11. Record the run
+      revision and job conclusions; do not infer hosted results before this
+      step.
 - [ ] Review preview output for project and global scopes using disposable
       targets; apply only after reviewing exact paths and collisions.
+- [ ] On disposable targets, exercise read-only `status` for absent and healthy
+      states and `verify` for healthy and failure states. Confirm their fixed
+      summary output and exit statuses without exposing file contents, hashes,
+      or backup names.
 - [ ] Required release gate: complete the end-user-optional [manual runtime
       smoke protocol](compatibility.md#opt-in-manual-runtime-smoke) in a safe
       disposable project, recording exact host, role, model, effort, and access
@@ -35,7 +49,8 @@ do not create or push its tag until the checks below are complete.
       unavailable; verify rollback retains a newly created protective file; do
       not assume undocumented flags.
 - [ ] Confirm the compatibility matrix still distinguishes Windows/Python
-      3.11 CI coverage from unverified macOS/Linux runtime behavior.
+      3.11, Ubuntu/Python 3.11, and macOS/Python 3.11 workflow coverage from
+      unverified live Codex runtime behavior.
 - [ ] Sanitize every report: never upload configs, manifests, backups, logs,
       prompts, credentials, or personal paths.
 
@@ -43,6 +58,9 @@ do not create or push its tag until the checks below are complete.
 
 - [ ] Confirm `CHANGELOG.md` still says `v0.1.0` is planned and move only the
       validated entries into the release section.
+- [ ] After every required gate passes, select the exact clean revision for the
+      annotated tag; until then, tag and archive reproducibility remain planned
+      and unexecuted.
 - [ ] Create the annotated `v0.1.0` tag only after all required checks pass.
 - [ ] Verify the tag resolves to the selected commit and repeat the archive
       file-list/checksum check from the tag before publishing any artifact.

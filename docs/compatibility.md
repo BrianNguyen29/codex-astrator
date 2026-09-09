@@ -13,17 +13,21 @@ model.
 
 ## Validation status
 
-The checked-in workflow currently runs on `windows-latest` with Python 3.11.
-It parses the payload, runs `doctor`, and runs the focused tests; it does not
-exercise a live Codex host or a real user project. macOS and Linux runtime
-behavior has not been validated by this repository.
+The checked-in workflow is configured as independent jobs on
+`windows-latest`, `ubuntu-latest`, and `macos-latest`, with Python 3.11 only
+and `fail-fast: false`. It parses the payload, runs `doctor`, and runs the
+focused tests on each matrix entry. The configuration is not hosted-CI
+evidence until a push runs it; this checkout does not claim those results. The
+workflow also does not exercise a live Codex host or a real user project.
+Broaden the Python matrix only after the initial three-host run has produced
+evidence.
 
-| Surface | Windows + Python 3.11 CI | macOS/Linux runtime |
-| --- | --- | --- |
-| Payload and reference-profile TOML parsing | Checked in CI | Unverified |
-| `doctor` layout check and focused installer tests | Checked in CI | Unverified |
-| Live Codex host loading and role execution | Not covered by CI | Unverified |
-| Installer preview/apply filesystem behavior | Covered by focused tests using disposable targets; real-target permissions are not covered | Unverified |
+| Surface | Windows + Python 3.11 | Ubuntu + Python 3.11 | macOS + Python 3.11 | Live Codex runtime |
+| --- | --- | --- | --- | --- |
+| Payload and reference-profile TOML parsing | Configured; hosted result pending push | Configured; hosted result pending push | Configured; hosted result pending push | Unverified |
+| `doctor` layout check and focused installer tests | Configured; hosted result pending push | Configured; hosted result pending push | Configured; hosted result pending push | Unverified |
+| Live Codex host loading and role execution | Not covered by CI | Not covered by CI | Not covered by CI | Unverified |
+| Installer preview/apply filesystem behavior | Covered by focused tests using disposable targets; real-target permissions are not covered | Same | Same | Unverified |
 
 Run the focused tests and `doctor` check in each target environment before
 relying on an installation there.
@@ -41,10 +45,16 @@ unavailable, report that limitation and use only an authorized fallback.
 3. Run a dry-run with the intended scope and target.
 4. Inspect collisions and preserve unrelated target configuration.
 5. Apply only after the plan is acceptable.
-6. Start Codex from the target project where project-scoped configuration is
+6. Run `python scripts/install.py status --scope project --target PATH` and
+   `python scripts/install.py verify --scope project --target PATH` to
+   distinguish file integrity from runtime compatibility.
+7. Start Codex from the target project where project-scoped configuration is
    trusted and loaded by that host.
 
 ## Opt-in manual runtime smoke
+
+The [evaluation harness](evaluation.md) supplies disposable cases and records
+the latest bounded attempt, including blockers rather than inferred success.
 
 This protocol is optional for end users and is not a general compatibility
 guarantee. It is required as a release-gate check for `v0.1.0`. Use an empty,

@@ -115,9 +115,10 @@ Vòng lặp vận hành là:
   thay thế. Chỉ dùng `--replace-existing` cùng `--apply` sau khi kiểm tra các
   path cụ thể.
 - Manifest phiên bản hiện tại từ chối update nếu file được theo dõi đã drift,
-  kể cả khi có `--replace-existing`. Installer snapshot các đích liên quan và
-  kiểm tra lại trước khi ghi, nhưng không khóa filesystem; tránh chỉnh sửa
-  đồng thời trong lúc `--apply`.
+  kể cả khi có `--replace-existing`. Apply có thay đổi phối hợp qua lock
+  cooperative theo từng target tại `.codex/.astrator.lock`, giữ đến khi commit
+  hoặc rollback; snapshot vẫn cần thiết vì editor bên ngoài không tham gia lock
+  và có thể race sau lần kiểm tra cuối.
 - Manifest safety-version cũ không được tự động nâng cấp hoặc xóa. File và
   backup vẫn nguyên vẹn cho đến khi đối chiếu thủ công.
 - Khi bộ role được quản lý thay đổi, cần gỡ phiên bản trước, kiểm tra các
@@ -133,12 +134,14 @@ Xem [chi tiết cài đặt và recovery](docs/installation.md) cùng
 ## Tương thích và xác minh
 
 Source và installer yêu cầu Python 3.11+. [GitHub Actions workflow](.github/workflows/validate.yml)
-trong repository hiện chỉ kiểm tra parse source, layout và test tập trung trên
-Windows với Python 3.11; workflow không chạy trên Codex host thực. Hành vi
-runtime trên macOS và Linux chưa được repository này xác minh; test preview/apply
-tập trung chỉ dùng target disposable và không bao phủ quyền trên target thực.
-Model cụ thể cũng phụ thuộc host và tài khoản đích. Smoke test tùy chọn chỉ
-dùng project disposable; không kiểm tra role read-only trên file project thực.
+trong repository được cấu hình kiểm tra độc lập parse source, layout và test
+tập trung trên Windows, Ubuntu và macOS, chỉ với Python 3.11
+(`fail-fast: false`). Checkout này chưa có bằng chứng CI hosted cho matrix đó
+cho đến khi push chạy workflow; workflow cũng không chạy trên Codex host thực.
+Test preview/apply tập trung chỉ dùng target disposable và không bao phủ quyền
+trên target thực. Model cụ thể phụ thuộc host và tài khoản đích. Smoke test tùy
+chọn chỉ dùng project disposable; không kiểm tra role read-only trên file
+project thực.
 
 Dự án không hứa hẹn tiết kiệm token hay giảm chi phí. Hãy đo workload tiêu
 biểu theo hướng dẫn tại [Token usage](docs/token-usage.md).
@@ -157,6 +160,7 @@ python scripts/doctor.py --source .
 - [Permissions](docs/permissions.md) — ranh giới ghi và phê duyệt
 - [Compatibility](docs/compatibility.md) — ma trận và quy trình smoke runtime tùy chọn
 - [Token usage](docs/token-usage.md) — cách đo và giới hạn
+- [Evaluation](docs/evaluation.md) — harness local, kế hoạch giới hạn và kết quả thử nghiệm
 - [Release checklist](docs/release-checklist.md) — cổng pre-release `v0.1.0` dự kiến
 - [Changelog](CHANGELOG.md) — thay đổi đã xác minh và đang chờ
 - [Security](SECURITY.md) — báo cáo lỗ hổng riêng tư và báo cáo an toàn

@@ -114,9 +114,10 @@ The operating loop is:
   implicitly. Use `--replace-existing` only with an explicit `--apply` after
   reviewing the exact paths.
 - Current-version manifests refuse updates when any tracked file has drifted,
-  even with `--replace-existing`. The installer snapshots relevant destinations
-  and rechecks them before writing, but does not lock the filesystem; avoid
-  concurrent edits during `--apply`.
+  even with `--replace-existing`. Mutating applies coordinate through a
+  per-target cooperative lock at `.codex/.astrator.lock`, held through commit
+  or rollback; snapshots still matter because external editors do not join the
+  lock and can race after the final check.
 - Legacy safety-version manifests are not automatically upgraded or removed.
   Files and backups remain untouched until manual reconciliation.
 - Changes to the managed role set require uninstalling the previous version,
@@ -133,12 +134,13 @@ See [installation and recovery details](docs/installation.md) and the
 ## Compatibility and verification
 
 The source and installer require Python 3.11+. The checked-in
-[GitHub Actions workflow](.github/workflows/validate.yml) validates source
-parsing, layout, and focused tests on Windows with Python 3.11; it does not
-exercise a live Codex host. Focused preview/apply tests use disposable targets;
-real-target permission behavior is not covered. macOS and Linux runtime
-behavior has not been validated by this repository, and named model
-availability depends on the target host and account. The optional smoke
+[GitHub Actions workflow](.github/workflows/validate.yml) is configured to
+validate source parsing, layout, and focused tests independently on Windows,
+Ubuntu, and macOS with Python 3.11 only (`fail-fast: false`). This checkout
+does not claim hosted-CI results until a push runs that matrix, and the
+workflow does not exercise a live Codex host. Focused preview/apply tests use
+disposable targets; real-target permission behavior is not covered. Named
+model availability depends on the target host and account. The optional smoke
 protocol uses only a disposable project; read-only roles must not be tested
 against real project files.
 
@@ -159,6 +161,7 @@ python scripts/doctor.py --source .
 - [Permissions](docs/permissions.md) — write and approval boundaries
 - [Compatibility](docs/compatibility.md) — matrix and opt-in runtime smoke protocol
 - [Token usage](docs/token-usage.md) — measurement protocol and limitations
+- [Evaluation](docs/evaluation.md) — local harness, bounded plan, and pilot evidence
 - [Release checklist](docs/release-checklist.md) — planned `v0.1.0` pre-release gate
 - [Changelog](CHANGELOG.md) — pending and validated changes
 - [Security](SECURITY.md) — private vulnerability reporting and safe reports

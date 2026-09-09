@@ -77,6 +77,87 @@ class PlanSnapshot:
     backup_ignore: PathSnapshot
 
 
+@dataclass(frozen=True)
+class InstallationStatus:
+    state: str
+    manifest: str
+    managed_ok: int | None
+    managed_total: int | None
+    backups_ok: int | None
+    backups_total: int | None
+    roles_ok: int | None
+    roles_total: int | None
+
+
+class TargetLock:
+    """A non-blocking, per-target lock for cooperating mutating installers.
+
+    The harmless lock file is intentionally persistent. Removing it would
+    introduce an unlink/open race between cooperating processes.
+    """
+
+    def __init__(self, target: Path) -> None:
+        self.path = _safe_join(target, ".codex/.astrator.lock")
+        self._handle = None
+
+    def __enter__(self) -> "TargetLock":
+        _ensure_directory(self.path.parent)
+        _assert_not_symlink(self.path)
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            fd = os.open(self.path, flags, 0o600)
+        except OSError as exc:
+            raise InstallerError(f"cannot open installer lock: {exc}") from exc
+        try:
+            handle = os.fdopen(fd, "r+b", buffering=0)
+            fd = -1
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                raise InstallerError("installer lock is not a regular file")
+            if info.st_size == 0:
+                handle.write(b"codex-astrator installer lock\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._handle = handle
+            return self
+        except (OSError, InstallerError) as exc:
+            if fd >= 0:
+                os.close(fd)
+            elif 'handle' in locals():
+                handle.close()
+            if isinstance(exc, InstallerError):
+                raise
+            raise InstallerError("another codex-astrator apply is active for this target") from exc
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        if self._handle is None:
+            return
+        try:
+            self._handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(self._handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            self._handle.close()
+            self._handle = None
+
+
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -409,15 +490,55 @@ def _lookup_table(data: Any, table: TablePath) -> Any:
     return value
 
 
+def _multiline_string_lines(lines: list[str]) -> set[int]:
+    """Identify multiline string spans so their contents are never lexed as TOML structure."""
+    def closes(text: str, marker: str, start: int = 0) -> bool:
+        position = text.find(marker, start)
+        while position >= 0:
+            if marker == "'''":
+                return True
+            backslashes = 0
+            cursor = position - 1
+            while cursor >= 0 and text[cursor] == "\\":
+                backslashes += 1
+                cursor -= 1
+            if backslashes % 2 == 0:
+                return True
+            position = text.find(marker, position + len(marker))
+        return False
+
+    ignored: set[int] = set()
+    delimiter: str | None = None
+    for number, line in enumerate(lines):
+        if delimiter is not None:
+            ignored.add(number)
+            if closes(line, delimiter):
+                delimiter = None
+            continue
+        match = _ASSIGN_RE.match(line)
+        if match is None:
+            continue
+        value = match.group("value").lstrip()
+        for candidate in ('"""', "'''"):
+            if value.startswith(candidate) and not closes(value, candidate, len(candidate)):
+                delimiter = candidate
+                ignored.add(number)
+                break
+    return ignored
+
+
 def _scan_assignments(raw: str) -> tuple[list[str], dict[tuple[TablePath, str], list[tuple[int, re.Match[str], Any, str]]], dict[str, Any]]:
     try:
         parsed = tomllib.loads(raw)
     except tomllib.TOMLDecodeError as exc:
         raise InstallerError(f"existing config is invalid TOML: {exc}") from exc
     lines = raw.splitlines(keepends=True)
+    multiline_lines = _multiline_string_lines(lines)
     table: TablePath = ()
     found: dict[tuple[TablePath, str], list[tuple[int, re.Match[str], Any, str]]] = {}
     for number, line in enumerate(lines):
+        if number in multiline_lines:
+            continue
         stripped = line.lstrip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -449,6 +570,8 @@ def _merge_profile(raw: bytes, profile: list[ProfileKey], replace_existing: bool
     except UnicodeDecodeError as exc:
         raise InstallerError(f"existing config is not UTF-8: {exc}") from exc
     lines, found, parsed = _scan_assignments(text)
+    multiline_lines = _multiline_string_lines(lines)
+    newline_style = "\r\n" if "\r\n" in text else "\n"
     conflicts: list[str] = []
     replacements: dict[int, str] = {}
     additions: dict[int, list[str]] = {}
@@ -458,6 +581,8 @@ def _merge_profile(raw: bytes, profile: list[ProfileKey], replace_existing: bool
     table_ranges: dict[TablePath, tuple[int, int]] = {}
     starts: list[tuple[int, TablePath]] = [(0, ())]
     for idx, line in enumerate(lines):
+        if idx in multiline_lines:
+            continue
         table = _line_table_path(line)
         if table is not None:
             starts.append((idx, table))
@@ -497,19 +622,23 @@ def _merge_profile(raw: bytes, profile: list[ProfileKey], replace_existing: bool
             if owned_table:
                 lines_to_add = []
                 if owned_table not in added_tables:
-                    lines_to_add.append(f"[{_format_toml_table(owned_table)}]\n")
+                    lines_to_add.append(f"[{_format_toml_table(owned_table)}]{newline_style}")
                     added_tables.add(owned_table)
-                lines_to_add.append(f"{_format_toml_key(owned.key)} = {_format_toml_scalar(owned.value)}\n")
+                lines_to_add.append(
+                    f"{_format_toml_key(owned.key)} = {_format_toml_scalar(owned.value)}{newline_style}"
+                )
                 # Keep newly-created tables after additions to all existing
                 # tables, including when both insertion points are EOF.
                 new_table_additions.setdefault(len(lines), []).extend(lines_to_add)
             else:
                 additions.setdefault(table_ranges.get((), (0, len(lines)))[1], []).append(
-                    f"{_format_toml_key(owned.key)} = {_format_toml_scalar(owned.value)}\n"
+                    f"{_format_toml_key(owned.key)} = {_format_toml_scalar(owned.value)}{newline_style}"
                 )
         else:
             _, end = table_ranges[owned_table]
-            additions.setdefault(end, []).append(f"{_format_toml_key(owned.key)} = {_format_toml_scalar(owned.value)}\n")
+            additions.setdefault(end, []).append(
+                f"{_format_toml_key(owned.key)} = {_format_toml_scalar(owned.value)}{newline_style}"
+            )
     if conflicts and not replace_existing:
         return raw, conflicts
     merged: list[str] = []
@@ -518,11 +647,11 @@ def _merge_profile(raw: bytes, profile: list[ProfileKey], replace_existing: bool
             # Ensure inserted assignments are separated from a previous line,
             # while retaining all existing comments/line endings verbatim.
             if merged and merged[-1] and not merged[-1].endswith(("\n", "\r")):
-                merged[-1] += "\n"
+                merged[-1] += newline_style
             merged.extend(additions[index])
         if index in new_table_additions:
             if merged and merged[-1] and not merged[-1].endswith(("\n", "\r")):
-                merged[-1] += "\n"
+                merged[-1] += newline_style
             merged.extend(new_table_additions[index])
         if index < len(lines):
             merged.append(replacements.get(index, lines[index]))
@@ -750,6 +879,13 @@ def _load_manifest(target: Path, scope: str) -> tuple[Path, dict[str, Any] | Non
         elif entry["original_exists"] or original_hash is not None:
             raise InstallerError("installer manifest is missing a required backup")
         _safe_join(target, entry_path)
+    if value["version"] == MANIFEST_VERSION:
+        role_entries = sorted(
+            entry["path"] for entry in entries
+            if entry["path"].startswith(".codex/agents/")
+        )
+        if managed_agent_paths is None or any(path not in managed_agent_paths for path in role_entries):
+            raise InstallerError("installer manifest has an undeclared managed role-profile entry")
     return path, value, snapshot
 
 
@@ -778,6 +914,94 @@ def _validate_installed_files(target: Path, manifest: dict[str, Any]) -> dict[st
             )
         snapshots[entry["path"]] = snapshot
     return snapshots
+
+
+def _validate_role_profile(path: Path, expected_name: str) -> bool:
+    """Validate only stable profile identity fields, not runtime availability."""
+    snapshot = _snapshot_file(path)
+    if not snapshot.exists:
+        return False
+    try:
+        profile = tomllib.loads((snapshot.content or b"").decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return False
+    return profile.get("name") == expected_name
+
+
+def _inspect_installation(target: Path, scope: str) -> InstallationStatus:
+    """Return an aggregate, content-free point-in-time integrity report."""
+    try:
+        _, manifest, _ = _load_manifest(target, scope)
+    except InstallerError:
+        return InstallationStatus("invalid", "invalid", None, None, None, None, None, None)
+    if manifest is None:
+        return InstallationStatus("absent", "missing", 0, 0, 0, 0, 0, 0)
+    entries = manifest["entries"]
+    backup_entries = [entry for entry in entries if entry.get("backup")]
+    roles = manifest.get("managed_agent_paths") or []
+    if manifest.get("version") != MANIFEST_VERSION:
+        return InstallationStatus(
+            "legacy", "legacy", None, len(entries), None, len(backup_entries), None, len(roles)
+        )
+
+    managed_ok = 0
+    roles_ok = 0
+    for entry in entries:
+        try:
+            destination = _safe_join(target, entry["path"], allow_missing=False)
+            snapshot = _snapshot_file(destination)
+        except InstallerError:
+            continue
+        if snapshot.exists and _sha256(snapshot.content or b"") == entry["installed_sha256"]:
+            managed_ok += 1
+    for relative in roles:
+        try:
+            role_path = _safe_join(target, relative, allow_missing=False)
+            roles_ok += int(_validate_role_profile(role_path, Path(relative).stem))
+        except InstallerError:
+            pass
+
+    backups_ok = len(backup_entries)  # _load_manifest hash-validates every declared backup.
+    privacy_ok = True
+    try:
+        ignore_snapshot = _snapshot_file(_backup_ignore_path(target))
+        _validate_backup_ignore(ignore_snapshot)
+        if not ignore_snapshot.exists:
+            privacy_ok = False
+        _reject_tracked_backup_files(target)
+    except InstallerError:
+        privacy_ok = False
+    healthy = (
+        managed_ok == len(entries)
+        and backups_ok == len(backup_entries)
+        and roles_ok == len(roles)
+        and privacy_ok
+    )
+    return InstallationStatus(
+        "healthy" if healthy else "drifted",
+        "current",
+        managed_ok,
+        len(entries),
+        backups_ok if privacy_ok else None,
+        len(backup_entries),
+        roles_ok,
+        len(roles),
+    )
+
+
+def _count_text(ok: int | None, total: int | None) -> str:
+    if ok is None or total is None:
+        return "unknown"
+    return f"{ok}/{total}"
+
+
+def _print_status(report: InstallationStatus, scope: str) -> None:
+    print(
+        f"STATUS: state={report.state} scope={scope} manifest={report.manifest} "
+        f"managed={_count_text(report.managed_ok, report.managed_total)} "
+        f"backups={_count_text(report.backups_ok, report.backups_total)} "
+        f"roles={_count_text(report.roles_ok, report.roles_total)}"
+    )
 
 
 def _read_instruction(path: Path) -> str:
@@ -1150,7 +1374,9 @@ def _uninstall(target: Path, scope: str, manifest_path: Path, manifest: dict[str
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Preview or safely install codex-astrator community payload")
-    parser.add_argument("command", nargs="?", choices=("install", "uninstall"), default="install")
+    parser.add_argument(
+        "command", nargs="?", choices=("install", "uninstall", "status", "verify"), default="install"
+    )
     parser.add_argument("--scope", choices=("global", "project"), required=False)
     parser.add_argument("--target", required=True, help="explicit target directory (never inferred)")
     parser.add_argument("--source", help="payload/repository root (defaults to this repository)")
@@ -1166,6 +1392,13 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--source is not used for uninstall")
     if args.command == "uninstall" and args.replace_existing:
         parser.error("--replace-existing is not used for uninstall")
+    if args.command in {"status", "verify"}:
+        if args.source:
+            parser.error(f"--source is not used for {args.command}")
+        if args.apply:
+            parser.error(f"--apply is not used for {args.command}; it is always read-only")
+        if args.replace_existing:
+            parser.error(f"--replace-existing is not used for {args.command}")
     return args
 
 
@@ -1177,46 +1410,77 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: target must be an existing non-symlink directory: {target}", file=sys.stderr)
         return 2
     try:
+        if args.command in {"status", "verify"}:
+            report = _inspect_installation(target, args.scope)
+            _print_status(report, args.scope)
+            if report.state == "healthy":
+                return 0
+            if args.command == "status" and report.state == "absent":
+                return 0
+            return 2
         if args.command == "uninstall":
-            manifest_path, manifest, manifest_snapshot = _load_manifest(target, args.scope)
-            if manifest is None:
-                raise InstallerError("no installer manifest found")
-            _uninstall(
-                target, args.scope, manifest_path, manifest, manifest_snapshot,
-                apply=args.apply,
-            )
+            if args.apply:
+                with TargetLock(target):
+                    manifest_path, manifest, manifest_snapshot = _load_manifest(target, args.scope)
+                    if manifest is None:
+                        raise InstallerError("no installer manifest found")
+                    _uninstall(
+                        target, args.scope, manifest_path, manifest, manifest_snapshot,
+                        apply=True,
+                    )
+            else:
+                manifest_path, manifest, manifest_snapshot = _load_manifest(target, args.scope)
+                if manifest is None:
+                    raise InstallerError("no installer manifest found")
+                _uninstall(
+                    target, args.scope, manifest_path, manifest, manifest_snapshot,
+                    apply=False,
+                )
             if not args.apply:
                 return 0
             print("UNINSTALLED: restored originals and removed managed files")
             return 0
         source = Path(args.source).expanduser().absolute() if args.source else Path(__file__).resolve().parents[1]
-        if not source.exists() or source.is_symlink():
-            raise InstallerError(f"payload source is unavailable: {source}")
-        plan, conflicts, old_manifest, manifest_path, managed_agent_paths, snapshot = _build_plan(
-            target, args.scope, source, args.replace_existing
-        )
-        agents_rel = ".codex/AGENTS.md" if args.scope == "global" else "AGENTS.md"
-        agents_snapshot = snapshot.destinations[agents_rel]
-        _print_plan(
-            plan,
-            conflicts,
-            apply=args.apply,
-            replace_existing=args.replace_existing,
-            protect_backups=not snapshot.backup_ignore.exists,
-            unmanaged_orchestration=(
-                agents_snapshot.exists
-                and _has_unmanaged_orchestration(agents_snapshot.content or b"")
-            ),
-        )
-        if conflicts and (not args.apply or not args.replace_existing):
-            return 3
+        def install_or_preview() -> int:
+            global _FAIL_AFTER
+            if not source.exists() or source.is_symlink():
+                raise InstallerError(f"payload source is unavailable: {source}")
+            plan, conflicts, old_manifest, manifest_path, managed_agent_paths, snapshot = _build_plan(
+                target, args.scope, source, args.replace_existing
+            )
+            agents_rel = ".codex/AGENTS.md" if args.scope == "global" else "AGENTS.md"
+            agents_snapshot = snapshot.destinations[agents_rel]
+            _print_plan(
+                plan,
+                conflicts,
+                apply=args.apply,
+                replace_existing=args.replace_existing,
+                protect_backups=not snapshot.backup_ignore.exists,
+                unmanaged_orchestration=(
+                    agents_snapshot.exists
+                    and _has_unmanaged_orchestration(agents_snapshot.content or b"")
+                ),
+            )
+            if conflicts and (not args.apply or not args.replace_existing):
+                return 3
+            if not args.apply:
+                return 0
+            # Test-only fault injection lets rollback be tested without a
+            # public failure switch or an actual filesystem fault.
+            injected = os.environ.get("CODEX_ASTRATOR_TEST_FAIL_AFTER")
+            _FAIL_AFTER = int(injected) if injected is not None else None
+            _apply_plan(target, args.scope, plan, old_manifest, manifest_path, managed_agent_paths, snapshot)
+            return 0
+
+        if args.apply:
+            with TargetLock(target):
+                result = install_or_preview()
+        else:
+            result = install_or_preview()
+        if result:
+            return result
         if not args.apply:
             return 0
-        # Test-only fault injection lets the rollback path be tested without
-        # changing the public interface or requiring a filesystem failure.
-        injected = os.environ.get("CODEX_ASTRATOR_TEST_FAIL_AFTER")
-        _FAIL_AFTER = int(injected) if injected is not None else None
-        _apply_plan(target, args.scope, plan, old_manifest, manifest_path, managed_agent_paths, snapshot)
         print("APPLIED: transaction committed")
         return 0
     except (InstallerError, ValueError) as exc:
