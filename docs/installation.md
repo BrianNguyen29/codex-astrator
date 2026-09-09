@@ -96,17 +96,15 @@ Without a manifest, ownership of arbitrary existing configuration cannot be
 reconstructed; `absent` means no manifest or retained backup evidence was
 found, not that every file in the target was independently classified.
 
-New v2 manifests record `expected_role_sha256` for every declared role, including
+New v3 manifests record `expected_role_sha256` for every declared role, including
 preexisting byte-identical role files that the installer does not own. Role
 hash drift is unhealthy without changing ownership or authorizing deletion.
-Older v2 manifests without this metadata report `unverified` (exit 2), but are
-eligible for an explicit install/update migration. Its preview reports one
-manifest metadata change even when no payload file changes are needed and says
-that role-integrity metadata will be added with ownership and backup entries
-unchanged; it does not print hash values. Apply writes the role hashes while
-preserving those ownership and backup entries, after which `verify` can report
-healthy when all checks pass. `status` and `verify` never migrate a manifest
-themselves.
+They also record original POSIX permission modes for files with original
+backups. Versions 1 and 2 are legacy: their backups do not reliably record
+the original permission mode, so automatic update, restore, and uninstall are
+blocked. This supersedes the earlier v2 role-hash-only migration. Do not infer
+an original mode from a backup's current mode or from the installed file.
+`status` and `verify` remain read-only and never migrate a manifest.
 
 Use `python scripts/install.py --help` for the installed CLI's complete option
 set. The command names above are the stable contract documented by this
@@ -161,7 +159,7 @@ unmanaged, and checks those snapshots again immediately before its first
 write. A stale plan fails without applying or rolling back over the intervening
 content.
 
-Manifest safety version 2 provides these update checks. Version 1 manifests
+Manifest safety version 3 provides these update and mode checks. Versions 1 and 2
 are not automatically promoted: install/update and uninstall, including their
 previews, report a blocked legacy state and preserve current files and backups.
 Manually compare each installed file with its referenced backup, decide which
@@ -185,6 +183,11 @@ check, so keep the target quiescent during `--apply`.
 
 ## Troubleshooting
 
+- **Permission metadata:** v3 preserves supported ordinary POSIX mode bits,
+  not arbitrary ACLs/xattrs or ownership. Existing files requiring unsupported
+  metadata handling fail closed. On Windows, existing-file backup/restore is
+  refused rather than silently losing DACLs. See the precise
+  [filesystem limits](permissions.md#filesystem-permission-limits).
 - **Collision:** A first install with an existing destination previews a
   conflict and exits without replacing it. Review the exact path, preserve the
   local file when appropriate, or rerun with `--replace-existing --apply` only
@@ -195,16 +198,13 @@ check, so keep the target quiescent during `--apply`.
   writing. Reconcile the target with the recorded backup or your intended
   local content, then inspect a fresh preview; do not delete the manifest to
   skip the check.
-- **Legacy migration:** A version 1 safety manifest is intentionally blocked.
+- **Legacy migration:** Version 1 and 2 safety manifests are intentionally blocked.
   Compare each installed file with its referenced backup, decide what to keep,
   and remove the legacy manifest only after manual reconciliation. No automatic
   restore or migration is performed.
-- **Old v2 role metadata:** A current v2 manifest without
-  `expected_role_sha256` is explicitly `unverified`. Preview the install/update
-  to review its one metadata-only manifest change, then use `--apply` to record
-  role hashes while preserving ownership and backup entries. `status` and
-  `verify` do not perform this migration; reconcile any `recovery-required`
-  artifacts first.
+- **Old v2 role metadata:** Having role hashes does not establish original
+  permission modes. Both forms of v2 manifest require manual reconciliation;
+  adding hashes alone no longer makes the installation safely restorable.
 - **Role unavailable:** Model IDs, efforts, and access modes are requests, not
   host guarantees. Check the target host/account and the execution trace. If a
   role or model is unavailable, report it and use only a fallback that the

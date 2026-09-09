@@ -19,20 +19,18 @@ one `ubuntu-latest` job with Python 3.12. `fail-fast: false` keeps all four
 matrix jobs independent. It parses the payload, runs `doctor`, and runs the
 focused tests on each matrix entry.
 
-An [observed run at the exact revision
-`96cbc6a`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34314915552)
-passed parsing, `doctor`, and focused tests on all three Python 3.11 hosts.
-That run predates the added Ubuntu 3.12 matrix entry, so it is not evidence for
-that job or for the current modified workflow; a hosted rerun is still
-required. The workflow does not exercise a live Codex host or a real user
-project.
+An [observed run at the exact hardening revision
+`9515d86`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34341342685)
+passed parsing, `doctor`, and focused tests in all four jobs. CI does not
+exercise a live Codex host or a real user project, and the remaining release
+gates are separate from this matrix result.
 
 | Surface | Windows + Python 3.11 | Ubuntu + Python 3.11 | Ubuntu + Python 3.12 | macOS + Python 3.11 | Live Codex runtime |
 | --- | --- | --- | --- | --- | --- |
 | Matrix configuration in the current workflow | Configured | Configured | Configured | Configured | Unverified |
-| Payload and reference-profile TOML parsing at 96cbc6a | Passed | Passed | Not covered by observed run | Passed | Unverified |
-| `doctor` layout check at 96cbc6a | Passed | Passed | Not covered by observed run | Passed | Unverified |
-| Focused tests at 96cbc6a | Passed | Passed | Not covered by observed run | Passed | Unverified |
+| Payload and reference-profile TOML parsing at 9515d86 | Passed | Passed | Passed | Passed | Unverified |
+| `doctor` layout check at 9515d86 | Passed | Passed | Passed | Passed | Unverified |
+| Focused tests at 9515d86 | Passed | Passed | Passed | Passed | Unverified |
 | Live Codex host loading and role execution | Not covered by CI | Not covered by CI | Not covered by CI | Not covered by CI | Unverified |
 | Installer preview/apply filesystem behavior | Covered by focused tests using disposable targets; real-target permissions are not covered | Same | Same | Same | Unverified |
 

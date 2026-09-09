@@ -110,6 +110,10 @@ The operating loop is:
 
 ## Safety and boundaries
 
+- Manifest v3 preserves supported POSIX file modes and uses private backup
+  modes. Legacy v1/v2 restoration requires manual reconciliation. Windows
+  existing-file ACL backup/restore is unsupported and fails closed; see
+  [permission limits](docs/permissions.md#filesystem-permission-limits).
 - Existing destination files are reported as collisions and are never replaced
   implicitly. Use `--replace-existing` only with an explicit `--apply` after
   reviewing the exact paths.
@@ -137,11 +141,12 @@ The source and installer require Python 3.11+. The checked-in
 [GitHub Actions workflow](.github/workflows/validate.yml) validates source
 parsing, layout, and focused tests independently on Windows, Ubuntu, and macOS
 with Python 3.11, plus one Ubuntu job with Python 3.12
-(`fail-fast: false`, four jobs total). An [observed run at the exact revision
-`96cbc6a`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34314915552)
-passed all three Python 3.11 jobs. That run does not cover the added Ubuntu
-3.12 job and does not verify the current modified workflow; a hosted rerun is
-required. The workflow does not exercise a live Codex host. Focused
+(`fail-fast: false`, four jobs total). An [observed run at the exact hardening
+revision `9515d86`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34341342685)
+passed all four jobs. This confirms hosted matrix coverage for that commit;
+it does not establish live Codex runtime compatibility or complete the other
+release gates.
+The workflow does not exercise a live Codex host. Focused
 preview/apply tests use disposable targets; real-target permission behavior is
 not covered. Named model availability depends on the target host and account.
 The optional smoke protocol uses only a disposable project; read-only roles

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -67,6 +68,227 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("PREVIEW", result.stdout)
         self.assertIn(".codex/.astrator-backups/.gitignore", result.stdout)
 
+    @unittest.skipUnless(os.name == "nt", "Windows-specific fail-closed contract")
+    def test_windows_existing_file_is_refused_but_fresh_lifecycle_works(self) -> None:
+        config = self.target / ".codex" / "config.toml"
+        config.parent.mkdir()
+        config.write_bytes(b"user_owned = true\n")
+        before = self.snapshot_files()
+
+        refused = self.install()
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("Windows ACL-preserving backup and restore is unavailable", refused.stderr)
+        after_refusal = self.snapshot_files()
+        self.assertEqual(after_refusal.pop(".codex/.astrator.lock"), b"codex-astrator installer lock\n")
+        self.assertEqual(after_refusal, before)
+
+        config.unlink()
+        installed = self.install()
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        manifest_before = (self.target / ".codex" / "astrator-manifest.json").read_bytes()
+        repeated = self.install()
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertEqual(
+            (self.target / ".codex" / "astrator-manifest.json").read_bytes(),
+            manifest_before,
+        )
+        removed = self.run_cli(
+            "uninstall", "--scope", "project", "--target", str(self.target), "--apply"
+        )
+        self.assertEqual(removed.returncode, 0, removed.stderr)
+
+    def test_noop_apply_repairs_only_missing_backup_ignore(self) -> None:
+        self.assertEqual(self.install().returncode, 0)
+        manifest = self.target / ".codex" / "astrator-manifest.json"
+        ignore = self.target / ".codex" / ".astrator-backups" / ".gitignore"
+        manifest_before = manifest.read_bytes()
+        managed_before = {
+            path: (path.read_bytes(), path.stat().st_ino)
+            for path in self.target.rglob("*")
+            if path.is_file() and path not in {ignore, manifest}
+        }
+        ignore.unlink()
+
+        repaired = self.install()
+        self.assertEqual(repaired.returncode, 0, repaired.stderr)
+        self.assertEqual(ignore.read_bytes(), b"*\n")
+        self.assertEqual(manifest.read_bytes(), manifest_before)
+        self.assertEqual(
+            {path: (path.read_bytes(), path.stat().st_ino) for path in managed_before},
+            managed_before,
+        )
+
+    def test_uninstall_failure_rolls_back_only_completed_mutations(self) -> None:
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT / "scripts"))
+        import install as installer
+
+        self.assertEqual(self.install().returncode, 0)
+        manifest_path, manifest, manifest_snapshot = installer._load_manifest(self.target, "project")
+        self.assertIsNotNone(manifest)
+        destinations = [self.target.joinpath(*entry["path"].split("/")) for entry in manifest["entries"]]
+        untouched = destinations[1]
+        untouched_before = (untouched.read_bytes(), untouched.stat().st_ino)
+        original_remove = installer._remove_file
+        original_write = installer._write_bytes
+        removals = 0
+        rollback_writes: list[Path] = []
+
+        def fail_second_removal(path: Path) -> None:
+            nonlocal removals
+            if path in destinations:
+                removals += 1
+                if removals == 2:
+                    raise installer.InstallerError("injected uninstall deletion failure")
+            original_remove(path)
+
+        def record_write(path: Path, data: bytes, **kwargs) -> None:
+            rollback_writes.append(path)
+            original_write(path, data, **kwargs)
+
+        installer._remove_file = fail_second_removal
+        installer._write_bytes = record_write
+        try:
+            with self.assertRaisesRegex(installer.InstallerError, "changes rolled back"):
+                installer._uninstall(
+                    self.target, "project", manifest_path, manifest, manifest_snapshot,
+                    apply=True,
+                )
+        finally:
+            installer._remove_file = original_remove
+            installer._write_bytes = original_write
+        self.assertEqual(rollback_writes, [destinations[0]])
+        self.assertEqual((untouched.read_bytes(), untouched.stat().st_ino), untouched_before)
+        self.assertTrue(manifest_path.exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX permission modes are unavailable on Windows")
+    def test_existing_modes_survive_apply_update_and_uninstall(self) -> None:
+        config = self.target / ".codex" / "config.toml"
+        config.parent.mkdir()
+        config.write_bytes(b"# original config\n")
+        config.chmod(0o700)
+        agents = self.target / "AGENTS.md"
+        agents.write_bytes(b"# original instructions\n")
+        agents.chmod(0o600)
+
+        installed = self.install()
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(agents.stat().st_mode), 0o600)
+        manifest = json.loads(
+            (self.target / ".codex" / "astrator-manifest.json").read_text(encoding="utf-8")
+        )
+        modes = {entry["path"]: entry["original_mode"] for entry in manifest["entries"]}
+        self.assertEqual(modes[".codex/config.toml"], 0o700)
+        self.assertEqual(modes["AGENTS.md"], 0o600)
+
+        (self.source / "payload" / "instructions" / "orchestration.md").write_text(
+            "Updated instructions.\n", encoding="utf-8"
+        )
+        updated = self.install("--replace-existing")
+        self.assertEqual(updated.returncode, 0, updated.stderr)
+        self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(agents.stat().st_mode), 0o600)
+
+        removed = self.run_cli(
+            "uninstall", "--scope", "project", "--target", str(self.target), "--apply"
+        )
+        self.assertEqual(removed.returncode, 0, removed.stderr)
+        self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(agents.stat().st_mode), 0o600)
+
+    @unittest.skipIf(os.name == "nt", "POSIX permission modes are unavailable on Windows")
+    def test_backup_storage_is_private_under_broad_umask(self) -> None:
+        config = self.target / ".codex" / "config.toml"
+        config.parent.mkdir()
+        config.write_bytes(b"private = true\n")
+        previous_umask = os.umask(0)
+        try:
+            installed = self.install()
+        finally:
+            os.umask(previous_umask)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+
+        backup_root = self.target / ".codex" / ".astrator-backups"
+        for directory in [backup_root, *(path for path in backup_root.iterdir() if path.is_dir())]:
+            self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE((backup_root / ".gitignore").stat().st_mode), 0o600)
+        backups = list(backup_root.rglob("*.bak"))
+        self.assertTrue(backups)
+        for backup in backups:
+            self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o600)
+
+    @unittest.skipIf(os.name == "nt", "POSIX permission modes are unavailable on Windows")
+    def test_chmod_after_plan_is_detected_and_rollback_restores_mode(self) -> None:
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT / "scripts"))
+        import install as installer
+
+        config = self.target / ".codex" / "config.toml"
+        config.parent.mkdir()
+        config.write_bytes(b"# original\n")
+        config.chmod(0o640)
+        plan, conflicts, old_manifest, manifest_path, managed_agent_paths, snapshot = installer._build_plan(
+            self.target, "project", self.source, False
+        )
+        self.assertFalse(conflicts)
+        config.chmod(0o600)
+        with self.assertRaisesRegex(installer.InstallerError, "stale plan"):
+            installer._apply_plan(
+                self.target, "project", plan, old_manifest, manifest_path,
+                managed_agent_paths, snapshot,
+            )
+        self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
+
+        plan, conflicts, old_manifest, manifest_path, managed_agent_paths, snapshot = installer._build_plan(
+            self.target, "project", self.source, False
+        )
+        installer._FAIL_AFTER = 3
+        try:
+            with self.assertRaisesRegex(installer.InstallerError, "changes rolled back"):
+                installer._apply_plan(
+                    self.target, "project", plan, old_manifest, manifest_path,
+                    managed_agent_paths, snapshot,
+                )
+        finally:
+            installer._FAIL_AFTER = None
+        self.assertEqual(config.read_bytes(), b"# original\n")
+        self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
+
+    @unittest.skipIf(os.name == "nt", "Windows safely refuses installs that require user-file backups")
+    def test_late_edit_after_backup_is_not_overwritten_by_rollback(self) -> None:
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT / "scripts"))
+        import install as installer
+
+        config = self.target / ".codex" / "config.toml"
+        config.parent.mkdir()
+        config.write_bytes(b"# inspected original\n")
+        plan, conflicts, old_manifest, manifest_path, managed_agent_paths, snapshot = installer._build_plan(
+            self.target, "project", self.source, False
+        )
+        self.assertFalse(conflicts)
+        original_copy_backup = installer._copy_backup
+        intervening = b"# editor changed this after backup\n"
+
+        def copy_then_edit(source: Path, destination: Path) -> None:
+            original_copy_backup(source, destination)
+            if source == config:
+                config.write_bytes(intervening)
+
+        installer._copy_backup = copy_then_edit
+        try:
+            with self.assertRaisesRegex(installer.InstallerError, "stale plan"):
+                installer._apply_plan(
+                    self.target, "project", plan, old_manifest, manifest_path,
+                    managed_agent_paths, snapshot,
+                )
+        finally:
+            installer._copy_backup = original_copy_backup
+        self.assertEqual(config.read_bytes(), intervening)
+        self.assertFalse(manifest_path.exists())
+        self.assertEqual(list((self.target / ".codex" / ".astrator-backups").rglob("*.bak")), [])
+
     def test_recovery_transaction_without_manifest_blocks_every_install_mode(self) -> None:
         backup_root = self.target / ".codex" / ".astrator-backups"
         payload = backup_root / ".txn-interrupted" / "recovery.bak"
@@ -117,6 +339,7 @@ class InstallerTests(unittest.TestCase):
                 payload.unlink()
                 payload.parent.rmdir()
 
+    @unittest.skipIf(os.name == "nt", "Windows safely refuses installs that require user-file backups")
     def test_referenced_backup_and_benign_marker_allow_repeat_apply(self) -> None:
         config = self.target / ".codex" / "config.toml"
         config.parent.mkdir()
@@ -133,6 +356,7 @@ class InstallerTests(unittest.TestCase):
         after = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(after["entries"], before["entries"])
 
+    @unittest.skipIf(os.name == "nt", "Windows safely refuses installs that require user-file backups")
     def test_unmanaged_orchestration_warning_preserves_legacy_content(self) -> None:
         agents = self.target / "AGENTS.md"
         legacy = "# Existing policy\nAlways delegate implementation to sub-agents.\n"
@@ -148,6 +372,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(installed.returncode, 0, installed.stderr)
         self.assertTrue(agents.read_text(encoding="utf-8").startswith(legacy))
 
+    @unittest.skipIf(os.name == "nt", "Windows safely refuses installs that require user-file backups")
     @unittest.skipUnless(shutil.which("git"), "git is required for ignore integration test")
     def test_sensitive_project_backup_is_ignored_by_git(self) -> None:
         subprocess.run(["git", "init", "--quiet", str(self.target)], check=True)
@@ -219,6 +444,20 @@ class InstallerTests(unittest.TestCase):
         self.assertRegex(refused.stderr, "symlink|path escapes target")
         self.assertEqual(list(outside.iterdir()), [])
 
+    @unittest.skipIf(os.name == "nt", "POSIX permission modes are unavailable on Windows")
+    def test_permissive_existing_backup_directory_is_not_silently_hardened(self) -> None:
+        backup_root = self.target / ".codex" / ".astrator-backups"
+        backup_root.mkdir(parents=True)
+        backup_root.chmod(0o755)
+        (backup_root / ".gitignore").write_bytes(b"*\n")
+
+        refused = self.install()
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("permissions are too broad", refused.stderr)
+        self.assertEqual(stat.S_IMODE(backup_root.stat().st_mode), 0o755)
+        self.assertFalse((self.target / ".codex" / "astrator-manifest.json").exists())
+
+    @unittest.skipIf(os.name == "nt", "Windows safely refuses installs that require user-file backups")
     def test_real_profile_existing_final_table_and_uninstall(self) -> None:
         import tomllib
         (self.source / "profiles" / "reference.toml").write_bytes(
@@ -257,6 +496,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(files, again)
         self.assertIn("0 file change(s)", second.stdout)
 
+    @unittest.skipIf(os.name == "nt", "Windows safely refuses installs that require user-file backups")
     def test_clean_update_preserves_first_original_for_uninstall(self) -> None:
         config = self.target / ".codex" / "config.toml"
         config.parent.mkdir()
@@ -283,7 +523,7 @@ class InstallerTests(unittest.TestCase):
         manifest = json.loads(
             (self.target / ".codex" / "astrator-manifest.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(manifest["version"], 2)
+        self.assertEqual(manifest["version"], 3)
         self.assertIn(b"extra = false", config.read_bytes())
 
         removed = self.run_cli("uninstall", "--scope", "project", "--target", str(self.target), "--apply")
@@ -335,6 +575,7 @@ class InstallerTests(unittest.TestCase):
         import tomllib
         self.assertEqual(tomllib.loads(config)["features"], {"multi_agent": True, "other_feature": False})
 
+    @unittest.skipIf(os.name == "nt", "Windows safely refuses installs that require user-file backups")
     def test_existing_config_comments_and_unrelated_values_survive(self) -> None:
         config = self.target / ".codex" / "config.toml"
         config.parent.mkdir()
@@ -351,6 +592,7 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("other = 7", result)
         self.assertIn("multi_agent = true # user value", result)
 
+    @unittest.skipIf(os.name == "nt", "Windows safely refuses installs that require user-file backups")
     def test_quoted_table_headers_preserve_paths_comments_and_values(self) -> None:
         config = self.target / ".codex" / "config.toml"
         config.parent.mkdir()
@@ -377,6 +619,7 @@ class InstallerTests(unittest.TestCase):
         )
         self.assertTrue(parsed["features"]["multi_agent"])
 
+    @unittest.skipIf(os.name == "nt", "Windows safely refuses installs that require user-file backups")
     def test_quoted_equivalent_managed_table_is_replaced_in_place(self) -> None:
         config = self.target / ".codex" / "config.toml"
         config.parent.mkdir()
@@ -404,6 +647,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(config.read_text(encoding="utf-8"), original)
         self.assertFalse((self.target / "AGENTS.md").exists())
 
+    @unittest.skipIf(os.name == "nt", "Windows safely refuses installs that require user-file backups")
     def test_collision_requires_explicit_replace(self) -> None:
         skill = self.target / ".agents" / "skills" / "astra-orchestrator" / "SKILL.md"
         skill.parent.mkdir(parents=True)
@@ -426,6 +670,7 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue((self.target / ".codex" / "astrator-manifest.json").exists())
         self.assertEqual(skill.read_text(encoding="utf-8"), "edited by user\n")
 
+    @unittest.skipIf(os.name == "nt", "Windows safely refuses installs that require user-file backups")
     def test_apply_rolls_back_injected_failure(self) -> None:
         config = self.target / ".codex" / "config.toml"
         config.parent.mkdir()
@@ -442,6 +687,7 @@ class InstallerTests(unittest.TestCase):
             b"*\n",
         )
 
+    @unittest.skipIf(os.name == "nt", "Windows safely refuses installs that require user-file backups")
     @unittest.skipUnless(shutil.which("git"), "git is required for rollback privacy test")
     def test_rollback_retains_ignore_when_backup_cleanup_is_denied(self) -> None:
         import sys as _sys
@@ -488,6 +734,7 @@ class InstallerTests(unittest.TestCase):
             )
             self.assertEqual(ignored.returncode, 0)
 
+    @unittest.skipIf(os.name == "nt", "Windows safely refuses installs that require user-file backups")
     def test_restore_failure_retains_recovery_backups(self) -> None:
         import sys as _sys
         _sys.path.insert(0, str(ROOT / "scripts"))
@@ -503,12 +750,12 @@ class InstallerTests(unittest.TestCase):
         original_write = installer._write_bytes
         calls = 0
 
-        def fail_commit_and_restore(path: Path, data: bytes) -> None:
+        def fail_commit_and_restore(path: Path, data: bytes, **kwargs) -> None:
             nonlocal calls
             calls += 1
             if calls in (4, 5):
                 raise installer.InstallerError("injected commit/restore failure")
-            original_write(path, data)
+            original_write(path, data, **kwargs)
 
         installer._write_bytes = fail_commit_and_restore
         try:
@@ -538,6 +785,7 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("state=recovery-required", status.stdout)
         self.assertNotIn("# original", status.stdout + status.stderr)
 
+    @unittest.skipIf(os.name == "nt", "Windows safely refuses installs that require user-file backups")
     def test_update_rejects_tracked_drift_even_with_replace(self) -> None:
         config = self.target / ".codex" / "config.toml"
         config.parent.mkdir()
@@ -909,6 +1157,7 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(path.name, f'{role["name"]}.toml')
         self.assertEqual(actual, expected)
 
+    @unittest.skipIf(os.name == "nt", "Windows safely refuses installs that require user-file backups")
     def test_real_repository_installs_exactly_six_agent_profiles(self) -> None:
         config = self.target / ".codex" / "config.toml"
         config.parent.mkdir()

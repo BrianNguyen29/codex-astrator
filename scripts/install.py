@@ -31,8 +31,8 @@ MARKER_END = "# <<< CODEX-ASTRATOR MANAGED BLOCK <<<"
 MANIFEST_NAME = "astrator-manifest.json"
 BACKUP_DIR_NAME = ".astrator-backups"
 BACKUP_IGNORE_CONTENT = b"*\n"
-MANIFEST_VERSION = 2
-LEGACY_MANIFEST_VERSIONS = {1}
+MANIFEST_VERSION = 3
+LEGACY_MANIFEST_VERSIONS = {1, 2}
 _FAIL_AFTER = None
 TablePath = tuple[str, ...]
 
@@ -68,6 +68,9 @@ class PlannedFile:
 class PathSnapshot:
     exists: bool
     content: bytes | None
+    mode: int | None
+    uid: int | None
+    gid: int | None
 
 
 @dataclass(frozen=True)
@@ -175,11 +178,14 @@ def _snapshot_file(path: Path) -> PathSnapshot:
     """Capture exact file state while rejecting links and non-regular files."""
     info = _lstat(path)
     if info is None:
-        return PathSnapshot(False, None)
+        return PathSnapshot(False, None, None, None, None)
     _assert_not_symlink(path, allow_missing=False)
     if not stat.S_ISREG(info.st_mode):
         raise InstallerError(f"expected regular file, found {path}")
-    return PathSnapshot(True, _read_bytes(path))
+    mode = stat.S_IMODE(info.st_mode) if os.name != "nt" else None
+    uid = info.st_uid if os.name != "nt" else None
+    gid = info.st_gid if os.name != "nt" else None
+    return PathSnapshot(True, _read_bytes(path), mode, uid, gid)
 
 
 def _revalidate_snapshot(path: Path, expected: PathSnapshot, *, label: str) -> None:
@@ -247,7 +253,7 @@ def _safe_join(root: Path, relative: str, *, allow_missing: bool = True) -> Path
     return candidate
 
 
-def _ensure_directory(path: Path) -> None:
+def _ensure_directory(path: Path, *, mode: int | None = None) -> None:
     """Create a directory one component at a time, rejecting links."""
     if path.exists() or path.is_symlink():
         _assert_not_symlink(path, allow_missing=False)
@@ -257,15 +263,99 @@ def _ensure_directory(path: Path) -> None:
     parent = path.parent
     if parent != path:
         _ensure_directory(parent)
+    created = False
     try:
-        path.mkdir()
+        path.mkdir(mode=mode if mode is not None else 0o777)
+        created = True
     except FileExistsError:
         _assert_not_symlink(path, allow_missing=False)
     except OSError as exc:
         raise InstallerError(f"cannot create directory {path}: {exc}") from exc
+    if created and mode is not None and os.name != "nt":
+        try:
+            path.chmod(mode)
+        except OSError as exc:
+            try:
+                path.rmdir()
+            except OSError:
+                pass
+            raise InstallerError(f"cannot secure directory {path}: {exc}") from exc
 
 
-def _write_bytes(path: Path, data: bytes) -> None:
+def _require_private_directory(path: Path) -> None:
+    """Create a private directory or reject an existing permissive one."""
+    info = _lstat(path)
+    if info is None:
+        _ensure_directory(path, mode=0o700)
+        try:
+            _validate_private_directory(path)
+        except InstallerError:
+            try:
+                path.rmdir()
+            except OSError:
+                pass
+            raise
+        return
+    _validate_private_directory(path, info)
+
+
+def _validate_private_directory(path: Path, info=None) -> None:
+    """Validate private storage without creating it (including during status)."""
+    if info is None:
+        info = _lstat(path)
+    if info is None:
+        raise InstallerError(f"required backup directory does not exist: {path}")
+    _assert_not_symlink(path, allow_missing=False)
+    if not stat.S_ISDIR(info.st_mode):
+        raise InstallerError(f"expected directory, found {path}")
+    if os.name != "nt" and info.st_uid != os.geteuid():
+        raise InstallerError(f"backup directory is not owned by the current user: {path}")
+    if os.name != "nt" and stat.S_IMODE(info.st_mode) & 0o077:
+        raise InstallerError(
+            f"backup directory permissions are too broad: {path}; set mode 0700 and retry"
+        )
+    _require_no_extended_attributes(path)
+
+
+def _require_private_file(snapshot: PathSnapshot, path: Path) -> None:
+    if os.name != "nt" and snapshot.exists and snapshot.mode is not None and snapshot.mode & 0o077:
+        raise InstallerError(
+            f"backup file permissions are too broad: {path}; set mode 0600 (or stricter) and retry"
+        )
+    if snapshot.exists:
+        _require_no_extended_attributes(path)
+
+
+def _preservable_mode(snapshot: PathSnapshot, path: Path) -> int | None:
+    """Return ordinary POSIX permission bits; special bits are fail-closed."""
+    mode = snapshot.mode
+    if mode is not None and (snapshot.uid != os.geteuid() or snapshot.gid != os.getegid()):
+        raise InstallerError(
+            f"owner/group on {path} cannot be preserved safely; reconcile it manually and retry"
+        )
+    if mode is not None and mode & ~0o777:
+        raise InstallerError(
+            f"special permission bits on {path} cannot be preserved safely; remove them and retry"
+        )
+    return mode
+
+
+def _require_no_extended_attributes(path: Path) -> None:
+    """Reject metadata that atomic replacement cannot preserve portably."""
+    if os.name == "nt" or not hasattr(os, "listxattr"):
+        return
+    try:
+        attributes = os.listxattr(path, follow_symlinks=False)
+    except OSError as exc:
+        raise InstallerError(f"cannot inspect extended attributes on {path}: {exc}") from exc
+    if attributes:
+        raise InstallerError(
+            f"extended attributes or ACL metadata on {path} cannot be preserved safely; "
+            "reconcile them manually and retry"
+        )
+
+
+def _write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> None:
     global _FAIL_AFTER
     if _FAIL_AFTER is not None:
         if _FAIL_AFTER <= 0:
@@ -273,20 +363,43 @@ def _write_bytes(path: Path, data: bytes) -> None:
         _FAIL_AFTER -= 1
     _ensure_directory(path.parent)
     _assert_not_symlink(path)
+    if mode is None and os.name != "nt":
+        info = _lstat(path)
+        if info is not None:
+            if not stat.S_ISREG(info.st_mode):
+                raise InstallerError(f"expected regular file, found {path}")
+            mode = stat.S_IMODE(info.st_mode)
     # A sibling temporary file and replace provide atomic publication.  The
     # temporary file is explicit and cleaned on all error paths.
     tmp = path.with_name(f".{path.name}.astrator-{uuid.uuid4().hex}.tmp")
+    fd = -1
     try:
-        with tmp.open("xb") as handle:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(tmp, flags, 0o600)
+        if os.name != "nt":
+            info = os.fstat(fd)
+            if info.st_uid != os.geteuid() or info.st_gid != os.getegid():
+                raise InstallerError(f"temporary file has unexpected owner/group: {tmp}")
+            _require_no_extended_attributes(tmp)
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
             handle.write(data)
             handle.flush()
+            if mode is not None and os.name != "nt":
+                os.fchmod(handle.fileno(), mode)
             os.fsync(handle.fileno())
         os.replace(tmp, path)
-    except OSError as exc:
+    except (OSError, InstallerError) as exc:
+        if fd >= 0:
+            os.close(fd)
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
+        if isinstance(exc, InstallerError):
+            raise
         raise InstallerError(f"cannot write {path}: {exc}") from exc
 
 
@@ -856,7 +969,7 @@ def _load_manifest(target: Path, scope: str) -> tuple[Path, dict[str, Any] | Non
         ):
             raise InstallerError("installer manifest has an invalid managed agent role set")
     expected_role_sha256 = value.get("expected_role_sha256")
-    if value["version"] == MANIFEST_VERSION and "expected_role_sha256" in value and (
+    if value["version"] == MANIFEST_VERSION and (
         not isinstance(expected_role_sha256, dict)
         or managed_agent_paths is None
         or set(expected_role_sha256) != set(managed_agent_paths)
@@ -886,6 +999,18 @@ def _load_manifest(target: Path, scope: str) -> tuple[Path, dict[str, Any] | Non
         original_hash = entry.get("original_sha256")
         if original_hash is not None and (not isinstance(original_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", original_hash)):
             raise InstallerError("installer manifest has an invalid original hash")
+        if value["version"] == MANIFEST_VERSION:
+            original_mode = entry.get("original_mode")
+            if entry["original_exists"]:
+                if os.name == "nt":
+                    if original_mode is not None:
+                        raise InstallerError(
+                            "installer manifest contains POSIX mode metadata that this Windows host cannot restore"
+                        )
+                elif type(original_mode) is not int or not 0 <= original_mode <= 0o777:
+                    raise InstallerError("installer manifest has an invalid original permission mode")
+            elif original_mode is not None:
+                raise InstallerError("installer manifest mode metadata is inconsistent")
         backup = entry.get("backup")
         if backup is not None:
             _relative_parts(backup)
@@ -901,6 +1026,8 @@ def _load_manifest(target: Path, scope: str) -> tuple[Path, dict[str, Any] | Non
             backup_snapshot = _snapshot_file(backup_path)
             if not backup_snapshot.exists or _sha256(backup_snapshot.content or b"") != original_hash:
                 raise InstallerError("installer manifest backup hash does not match metadata")
+            if value["version"] == MANIFEST_VERSION:
+                _require_private_file(backup_snapshot, backup_path)
         elif entry["original_exists"] or original_hash is not None:
             raise InstallerError("installer manifest is missing a required backup")
         _safe_join(target, entry_path)
@@ -911,6 +1038,13 @@ def _load_manifest(target: Path, scope: str) -> tuple[Path, dict[str, Any] | Non
         )
         if managed_agent_paths is None or any(path not in managed_agent_paths for path in role_entries):
             raise InstallerError("installer manifest has an undeclared managed role-profile entry")
+        backup_directories = {
+            _safe_join(target, entry["backup"], allow_missing=False).parent
+            for entry in entries if entry.get("backup")
+        }
+        backup_directories.add(target / ".codex" / BACKUP_DIR_NAME)
+        for backup_directory in backup_directories:
+            _validate_private_directory(backup_directory)
     return path, value, snapshot
 
 
@@ -1253,20 +1387,14 @@ def _print_plan(
     replace_existing: bool,
     protect_backups: bool,
     unmanaged_orchestration: bool,
-    migrate_manifest_metadata: bool,
 ) -> None:
     mode = "APPLY" if apply else "PREVIEW"
-    change_count = len(plan) + int(protect_backups) + int(migrate_manifest_metadata)
+    change_count = len(plan) + int(protect_backups)
     print(f"{mode}: {change_count} file change(s)")
     for item in plan:
         print(f"  {item.rel}: {item.reason}")
     if protect_backups:
         print(f"  .codex/{BACKUP_DIR_NAME}/.gitignore: protect local recovery backups from normal Git staging")
-    if migrate_manifest_metadata:
-        print(
-            f"  .codex/{MANIFEST_NAME}: add role integrity metadata "
-            "(ownership and backups unchanged)"
-        )
     if unmanaged_orchestration:
         print("WARNING: existing unmanaged orchestration-like instructions in AGENTS.md were preserved")
         print("  review them with the managed block for conflicts; the installer does not claim the combined policy is coherent")
@@ -1278,26 +1406,32 @@ def _print_plan(
             print("  rerun apply with --replace-existing to replace conflicting values/files")
 
 
-def _manifest_entries(target: Path, plan: list[PlannedFile], old_manifest: dict[str, Any] | None, backup_id: str) -> list[dict[str, Any]]:
+def _manifest_entries(
+    plan: list[PlannedFile], old_manifest: dict[str, Any] | None,
+    backup_id: str, destination_snapshots: dict[str, PathSnapshot],
+) -> list[dict[str, Any]]:
     previous = {entry["path"]: entry for entry in (old_manifest or {}).get("entries", [])}
     entries: list[dict[str, Any]] = []
     for item in plan:
-        destination = _safe_join(target, item.rel)
         old = previous.get(item.rel)
         if old is not None:
             original_exists = bool(old.get("original_exists"))
             original_hash = old.get("original_sha256")
+            original_mode = old.get("original_mode")
             backup = old.get("backup")
         else:
-            old_bytes = _read_bytes(destination) if _lstat(destination) is not None else None
+            original = destination_snapshots[item.rel]
+            old_bytes = original.content if original.exists else None
             original_exists = old_bytes is not None
             original_hash = _sha256(old_bytes) if old_bytes is not None else None
+            original_mode = original.mode if original_exists else None
             backup = f".codex/{BACKUP_DIR_NAME}/{backup_id}/{hashlib.sha256(item.rel.encode()).hexdigest()}.bak" if old_bytes is not None else None
         entries.append({
             "path": item.rel,
             "installed_sha256": _sha256(item.content),
             "original_exists": original_exists,
             "original_sha256": original_hash,
+            "original_mode": original_mode,
             "backup": backup,
         })
     # Preserve entries for files that did not need a content change.  This is
@@ -1313,8 +1447,8 @@ def _manifest_entries(target: Path, plan: list[PlannedFile], old_manifest: dict[
 def _copy_backup(source: Path, destination: Path) -> None:
     _assert_not_symlink(source, allow_missing=False)
     _assert_not_symlink(destination)
-    _ensure_directory(destination.parent)
-    _write_bytes(destination, _read_bytes(source))
+    _require_private_directory(destination.parent)
+    _write_bytes(destination, _read_bytes(source), mode=0o600)
 
 
 def _remove_file(path: Path) -> None:
@@ -1339,19 +1473,43 @@ def _apply_plan(target: Path, scope: str, plan: list[PlannedFile], old_manifest:
     _reject_tracked_backup_files(target)
     if old_manifest is not None:
         _validate_installed_files(target, old_manifest)
+    if not plan and old_manifest is not None:
+        if not snapshot.backup_ignore.exists:
+            _require_private_directory(target / ".codex" / BACKUP_DIR_NAME)
+            _revalidate_snapshot(backup_ignore, snapshot.backup_ignore, label="backup privacy rule")
+            _write_bytes(backup_ignore, BACKUP_IGNORE_CONTENT, mode=0o600)
+        return
+    if snapshot.manifest.exists:
+        _preservable_mode(snapshot.manifest, manifest_path)
+        _require_no_extended_attributes(manifest_path)
     backup_id = uuid.uuid4().hex
     transaction_dir = target / ".codex" / BACKUP_DIR_NAME / f".txn-{backup_id}"
     persistent_dir = target / ".codex" / BACKUP_DIR_NAME / backup_id
-    old_manifest_bytes = _read_bytes(manifest_path) if _lstat(manifest_path) is not None else None
-    changed: list[tuple[Path, bytes | None]] = []
+    old_manifest_bytes = snapshot.manifest.content if snapshot.manifest.exists else None
+    changed: list[tuple[Path, PathSnapshot]] = []
+    manifest_write_attempted = False
     transaction_backups: dict[Path, Path] = {}
     entries: list[dict[str, Any]] = []
     ignore_created = not snapshot.backup_ignore.exists
+    for relative, destination_snapshot in snapshot.destinations.items():
+        if destination_snapshot.exists:
+            _preservable_mode(destination_snapshot, _safe_join(target, relative))
+            _require_no_extended_attributes(_safe_join(target, relative))
+    if os.name == "nt" and (
+        snapshot.manifest.exists
+        or any(snapshot.destinations[item.rel].exists for item in plan)
+    ):
+        raise InstallerError(
+            "Windows ACL-preserving backup and restore is unavailable; no changes were applied. "
+            "Back up and reconcile existing destination files manually, or install into an empty target"
+        )
     try:
+        backup_root = target / ".codex" / BACKUP_DIR_NAME
+        _require_private_directory(backup_root)
         if ignore_created:
             # This must precede creation of any file that can contain user bytes.
-            _write_bytes(backup_ignore, BACKUP_IGNORE_CONTENT)
-        _ensure_directory(transaction_dir)
+            _write_bytes(backup_ignore, BACKUP_IGNORE_CONTENT, mode=0o600)
+        _require_private_directory(transaction_dir)
         # Back up every destination before the first publication.  Persistent
         # backups are made only for files that have not been installed before.
         previous = {entry["path"]: entry for entry in (old_manifest or {}).get("entries", [])}
@@ -1364,8 +1522,15 @@ def _apply_plan(target: Path, scope: str, plan: list[PlannedFile], old_manifest:
                 if item.rel not in previous:
                     persistent_backup = persistent_dir / f"{hashlib.sha256(item.rel.encode()).hexdigest()}.bak"
                     _copy_backup(destination, persistent_backup)
-            changed.append((destination, _read_bytes(destination) if _lstat(destination) is not None else None))
-        entries = _manifest_entries(target, plan, old_manifest, backup_id)
+        for relative, expected in snapshot.destinations.items():
+            destination = _safe_join(target, relative)
+            _revalidate_snapshot(destination, expected, label=relative)
+            if expected.exists:
+                _require_no_extended_attributes(destination)
+        _revalidate_snapshot(manifest_path, snapshot.manifest, label="installer manifest")
+        if snapshot.manifest.exists:
+            _require_no_extended_attributes(manifest_path)
+        entries = _manifest_entries(plan, old_manifest, backup_id, snapshot.destinations)
         manifest = {
             "version": MANIFEST_VERSION,
             "scope": scope,
@@ -1374,7 +1539,13 @@ def _apply_plan(target: Path, scope: str, plan: list[PlannedFile], old_manifest:
             "entries": entries,
         }
         for item in plan:
-            _write_bytes(_safe_join(target, item.rel), item.content)
+            destination_snapshot = snapshot.destinations[item.rel]
+            changed.append((_safe_join(target, item.rel), destination_snapshot))
+            _write_bytes(
+                _safe_join(target, item.rel), item.content,
+                mode=_preservable_mode(destination_snapshot, _safe_join(target, item.rel)),
+            )
+        manifest_write_attempted = True
         _write_bytes(manifest_path, (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8"))
         _cleanup_explicit_tree(transaction_dir)
     except Exception as exc:
@@ -1387,23 +1558,24 @@ def _apply_plan(target: Path, scope: str, plan: list[PlannedFile], old_manifest:
         # created files.  Every path was validated before publication.
         for destination, before in reversed(changed):
             try:
-                if before is None:
+                if not before.exists:
                     _remove_file(destination)
                 else:
                     backup = transaction_backups.get(destination)
                     if backup is not None and _lstat(backup) is not None:
-                        _write_bytes(destination, _read_bytes(backup))
+                        _write_bytes(destination, _read_bytes(backup), mode=before.mode)
                     else:
-                        _write_bytes(destination, before)
+                        _write_bytes(destination, before.content or b"", mode=before.mode)
             except Exception as rollback_exc:
                 rollback_errors.append(str(rollback_exc))
-        try:
-            if old_manifest_bytes is None:
-                _remove_file(manifest_path)
-            else:
-                _write_bytes(manifest_path, old_manifest_bytes)
-        except Exception as rollback_exc:
-            rollback_errors.append(str(rollback_exc))
+        if manifest_write_attempted:
+            try:
+                if old_manifest_bytes is None:
+                    _remove_file(manifest_path)
+                else:
+                    _write_bytes(manifest_path, old_manifest_bytes, mode=snapshot.manifest.mode)
+            except Exception as rollback_exc:
+                rollback_errors.append(str(rollback_exc))
         # Explicit cleanup only. No recursive deletion is used. The
         # persistent backup directory is also removed when this transaction
         # never reached manifest publication.
@@ -1425,16 +1597,25 @@ def _uninstall(target: Path, scope: str, manifest_path: Path, manifest: dict[str
     _require_current_manifest(manifest, "uninstall")
     _require_recovery_safe(target, manifest, "uninstall")
     entries = manifest["entries"]
+    if os.name == "nt" and any(entry.get("original_exists") for entry in entries):
+        raise InstallerError(
+            "Windows ACL-preserving backup and restore is unavailable; no changes were applied. "
+            "Restore and reconcile the original files manually from their declared backups"
+        )
     # Hash-check everything before any writes/deletes, so one edited file never
     # produces a half-uninstalled installation.
-    checked: list[tuple[dict[str, Any], Path, Path | None, bytes, PathSnapshot | None]] = []
+    checked: list[
+        tuple[dict[str, Any], Path, Path | None, PathSnapshot, PathSnapshot | None]
+    ] = []
     for entry in entries:
         destination = _safe_join(target, entry["path"], allow_missing=True)
         current_info = _lstat(destination)
         if current_info is None:
             raise InstallerError(f"refusing uninstall: installed file is missing or altered: {entry['path']}")
-        current = _read_bytes(destination)
-        if _sha256(current) != entry["installed_sha256"]:
+        current = _snapshot_file(destination)
+        _preservable_mode(current, destination)
+        _require_no_extended_attributes(destination)
+        if _sha256(current.content or b"") != entry["installed_sha256"]:
             raise InstallerError(f"refusing uninstall: installed file was edited: {entry['path']}")
         backup = None
         if entry.get("original_exists"):
@@ -1452,22 +1633,27 @@ def _uninstall(target: Path, scope: str, manifest_path: Path, manifest: dict[str
         return
     _revalidate_snapshot(manifest_path, manifest_snapshot, label="installer manifest")
     for entry, destination, backup, current, backup_snapshot in checked:
-        _revalidate_snapshot(destination, PathSnapshot(True, current), label=entry["path"])
+        _revalidate_snapshot(destination, current, label=entry["path"])
         if backup is not None and backup_snapshot is not None:
             _revalidate_snapshot(backup, backup_snapshot, label=f"backup for {entry['path']}")
+    changed: list[tuple[Path, PathSnapshot]] = []
     try:
         for entry, destination, backup, _, _ in checked:
             if backup is None:
+                before = _snapshot_file(destination)
                 _remove_file(destination)
+                changed.append((destination, before))
                 _cleanup_empty_dirs(destination.parent, target)
             else:
-                _write_bytes(destination, _read_bytes(backup))
+                before = _snapshot_file(destination)
+                _write_bytes(destination, _read_bytes(backup), mode=entry["original_mode"])
+                changed.append((destination, before))
         _remove_file(manifest_path)
     except Exception as exc:
         rollback_errors: list[str] = []
-        for _, destination, _, before, _ in reversed(checked):
+        for destination, before in reversed(changed):
             try:
-                _write_bytes(destination, before)
+                _write_bytes(destination, before.content or b"", mode=before.mode)
             except Exception as rollback_exc:
                 rollback_errors.append(str(rollback_exc))
         if rollback_errors:
@@ -1571,10 +1757,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             agents_rel = ".codex/AGENTS.md" if args.scope == "global" else "AGENTS.md"
             agents_snapshot = snapshot.destinations[agents_rel]
-            migrate_manifest_metadata = (
-                old_manifest is not None
-                and "expected_role_sha256" not in old_manifest
-            )
             _print_plan(
                 plan,
                 conflicts,
@@ -1585,7 +1767,6 @@ def main(argv: list[str] | None = None) -> int:
                     agents_snapshot.exists
                     and _has_unmanaged_orchestration(agents_snapshot.content or b"")
                 ),
-                migrate_manifest_metadata=migrate_manifest_metadata,
             )
             if conflicts and (not args.apply or not args.replace_existing):
                 return 3

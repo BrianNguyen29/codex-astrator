@@ -111,6 +111,10 @@ Vòng lặp vận hành là:
 
 ## An toàn và ranh giới
 
+- Manifest v3 bảo toàn POSIX mode trong phạm vi hỗ trợ và dùng quyền backup
+  riêng tư. Khôi phục manifest v1/v2 cần đối chiếu thủ công. Backup/restore ACL
+  của file đã tồn tại trên Windows chưa được hỗ trợ và bị từ chối an toàn;
+  xem [giới hạn quyền](docs/permissions.md#filesystem-permission-limits).
 - File đích đã tồn tại sẽ được báo là collision và không bao giờ tự động bị
   thay thế. Chỉ dùng `--replace-existing` cùng `--apply` sau khi kiểm tra các
   path cụ thể.
@@ -137,9 +141,9 @@ Source và installer yêu cầu Python 3.11+. [GitHub Actions workflow](.github/
 trong repository kiểm tra độc lập việc parse source, layout và test tập trung
 trên Windows, Ubuntu và macOS với Python 3.11, cộng thêm một job Ubuntu với
 Python 3.12 (`fail-fast: false`, tổng cộng bốn job). Một [lần chạy đã quan sát
-ở đúng revision `96cbc6a`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34314915552)
-đã pass cả ba job Python 3.11. Lần chạy đó chưa bao phủ job Ubuntu 3.12 mới
-thêm và không xác nhận workflow hiện tại sau chỉnh sửa; cần có hosted rerun.
+ở đúng revision hardening `9515d86`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34341342685)
+đã pass cả bốn job. Điều này xác nhận matrix hosted cho commit đó nhưng không
+chứng minh Codex runtime thực tương thích hay hoàn tất các release gate khác.
 Workflow cũng không chạy trên Codex host thực. Test preview/apply tập trung
 chỉ dùng target disposable và không bao phủ quyền trên target thực. Model cụ
 thể phụ thuộc host và tài khoản đích. Smoke test tùy chọn chỉ dùng project
