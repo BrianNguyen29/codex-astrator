@@ -73,6 +73,9 @@ validation of the unmodified end-user runtime environment.
 The CLI exposed aggregate usage: input 86,596, cached input 68,096, cache-write
 input 0, output 525, reasoning-output annotation 21. Aggregation across children
 was not independently verified. No quota-to-dollar conversion is claimed.
-The full workflow benchmark was not run after the policy blocker. Hosted
-Windows/Linux/macOS CI, exact release-revision archive checks, and release
-publication remain pending; no global install, commit, push, or tag was made.
+The full workflow benchmark was not run after the policy blocker. The later
+[CI run for b16999d](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34311240409)
+passed Windows/Ubuntu and failed macOS tests; see [compatibility](compatibility.md).
+That result does not validate later local fixes. Exact release-revision archive
+checks and release publication remain pending. The smoke attempt itself made
+no global install, commit, push, or tag.

@@ -97,18 +97,83 @@ class EvaluationTests(unittest.TestCase):
             with self.assertRaises(evaluate.EvaluationError):
                 evaluate.build_report(result, duration_ms=number)
 
-    def test_traversal_and_symlink_parent_rejected(self):
+    def test_traversal_is_rejected(self):
         for path in ("../escape", "C:/escape", "a/../../b", "a\\b"):
             with self.assertRaises(evaluate.EvaluationError):
                 evaluate._validate_relative_path(path)
-        self.prepare()
-        link = Path(self.temporary.name) / "link"
+
+    def test_alias_above_explicit_parent_is_accepted(self):
+        explicit_parent = Path(self.temporary.name) / "explicit-parent"
+        explicit_parent.mkdir()
+        alias = Path(self.temporary.name) / "aliasaboveexplicitparent"
         try:
-            link.symlink_to(self.root, target_is_directory=True)
+            alias.symlink_to(Path(self.temporary.name), target_is_directory=True)
         except OSError:
             self.skipTest("symlink creation unavailable")
+
+        output = alias / explicit_parent.name / "cases"
+        prepared = evaluate.prepare(output, ["onefilebug"], repeats=1)
+        self.assertEqual(prepared["output"], str(output))
+        workspace = output / "onefilebug" / "repeat-01"
+        self.assertEqual(evaluate.check(workspace)["outcome"], "failed")
+
+    def test_symlinked_workspace_leaf_and_direct_parent_are_rejected(self):
+        self.prepare()
+        workspace = self.root / "onefilebug" / "repeat-01"
+        workspace_link = Path(self.temporary.name) / "workspaceleaf"
+        direct_parent = Path(self.temporary.name) / "direct-parent"
+        direct_parent_target = Path(self.temporary.name) / "direct-parent-target"
+        direct_parent_target.mkdir()
+        try:
+            workspace_link.symlink_to(workspace, target_is_directory=True)
+            direct_parent.symlink_to(direct_parent_target, target_is_directory=True)
+        except OSError:
+            self.skipTest("symlink creation unavailable")
+
         with self.assertRaises(evaluate.EvaluationError):
-            evaluate.check(link / "onefilebug" / "repeat-01")
+            evaluate.check(workspace_link)
+        with self.assertRaises(evaluate.EvaluationError):
+            evaluate._emit({"kind": "test"}, direct_parent / "output.json")
+
+    def test_symlinked_manifest_workspace_is_rejected(self):
+        self.prepare()
+        manifest_path = self.root / evaluate.MANIFEST_NAME
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        nested_link = self.root / "onefilebug" / "manifestnested"
+        try:
+            nested_link.symlink_to(self.root / "onefilebug" / "repeat-01", target_is_directory=True)
+        except OSError:
+            self.skipTest("symlink creation unavailable")
+        manifest["tasks"][0]["workspace"] = "onefilebug/manifestnested"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        with self.assertRaises(evaluate.EvaluationError):
+            evaluate.check(self.root)
+
+    def test_symlinked_source_inside_workspace_is_not_read(self):
+        workspace = self.prepare("onefilebug")
+        source = workspace / "src/calculator.py"
+        outside = Path(self.temporary.name) / "outside.py"
+        outside.write_text("def add(left, right):\n    return left + right\n", encoding="utf-8")
+        try:
+            source.unlink()
+            source.symlink_to(outside)
+        except OSError:
+            self.skipTest("symlink creation unavailable")
+
+        self.assertEqual(evaluate.check(workspace)["outcome"], "failed")
+
+    def test_symlinked_output_leaf_is_rejected(self):
+        output_target = Path(self.temporary.name) / "output-target"
+        output_target.mkdir()
+        output = Path(self.temporary.name) / "output.json"
+        try:
+            output.symlink_to(output_target, target_is_directory=True)
+        except OSError:
+            self.skipTest("symlink creation unavailable")
+
+        with self.assertRaises(evaluate.EvaluationError):
+            evaluate._emit({"kind": "test"}, output)
 
     def test_cli_exit_and_new_report_output(self):
         workspace = self.prepare("onefilebug")

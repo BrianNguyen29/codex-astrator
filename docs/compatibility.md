@@ -16,16 +16,20 @@ model.
 The checked-in workflow is configured as independent jobs on
 `windows-latest`, `ubuntu-latest`, and `macos-latest`, with Python 3.11 only
 and `fail-fast: false`. It parses the payload, runs `doctor`, and runs the
-focused tests on each matrix entry. The configuration is not hosted-CI
-evidence until a push runs it; this checkout does not claim those results. The
-workflow also does not exercise a live Codex host or a real user project.
+focused tests on each matrix entry. The
+[observed run for b16999d](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34311240409)
+passed on Windows and Ubuntu, but failed the focused tests on macOS. Parsing
+and doctor passed on all three hosts. These results apply to that revision,
+not to subsequent local fixes. The workflow does not exercise a live Codex
+host or a real user project.
 Broaden the Python matrix only after the initial three-host run has produced
 evidence.
 
 | Surface | Windows + Python 3.11 | Ubuntu + Python 3.11 | macOS + Python 3.11 | Live Codex runtime |
 | --- | --- | --- | --- | --- |
-| Payload and reference-profile TOML parsing | Configured; hosted result pending push | Configured; hosted result pending push | Configured; hosted result pending push | Unverified |
-| `doctor` layout check and focused installer tests | Configured; hosted result pending push | Configured; hosted result pending push | Configured; hosted result pending push | Unverified |
+| Payload and reference-profile TOML parsing at b16999d | Passed | Passed | Passed | Unverified |
+| `doctor` layout check at b16999d | Passed | Passed | Passed | Unverified |
+| Focused tests at b16999d | Passed | Passed | Failed | Unverified |
 | Live Codex host loading and role execution | Not covered by CI | Not covered by CI | Not covered by CI | Unverified |
 | Installer preview/apply filesystem behavior | Covered by focused tests using disposable targets; real-target permissions are not covered | Same | Same | Unverified |
 

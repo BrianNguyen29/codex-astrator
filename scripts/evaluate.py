@@ -130,23 +130,27 @@ def _lexists(path: Path) -> bool:
     return os.path.lexists(os.fspath(path))
 
 
-def _check_parent(path: Path) -> None:
-    """Require an existing, non-symlink parent without following links."""
+def _check_parent(path: Path) -> Path:
+    """Return a canonical path after checking its explicit direct parent.
+
+    System-managed aliases may appear above the caller's existing parent (for
+    example, ``/var`` on macOS), so only the direct parent is required to be a
+    non-symlink directory.  Callers separately reject symlinked leaves and
+    harness-internal paths.
+    """
     absolute = Path(os.path.abspath(os.fspath(path)))
-    current = Path(absolute.anchor)
-    for component in absolute.relative_to(absolute.anchor).parts[:-1]:
-        current /= component
-        if current.is_symlink():
-            raise EvaluationError("refusing a path with a symlinked parent")
-        if not current.is_dir():
-            raise EvaluationError("the output parent must be an existing directory")
     parent = absolute.parent
     if parent.is_symlink() or not parent.is_dir():
         raise EvaluationError("the output parent must be an existing, non-symlink directory")
+    try:
+        canonical_parent = parent.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise EvaluationError("the output parent must be an existing directory") from exc
+    return canonical_parent / absolute.name
 
 
-def _require_new_directory(path: Path) -> None:
-    _check_parent(path)
+def _require_new_directory(path: Path) -> Path:
+    path = _check_parent(path)
     if _lexists(path):
         raise EvaluationError("refusing to overwrite an existing or symlinked output")
     try:
@@ -155,6 +159,7 @@ def _require_new_directory(path: Path) -> None:
         raise EvaluationError("refusing to overwrite an existing output") from exc
     if path.is_symlink() or not path.is_dir():
         raise EvaluationError("refusing an unsafe output directory")
+    return path
 
 
 def _write_new_text(path: Path, content: str) -> None:
@@ -218,17 +223,15 @@ def prepare(output: Path, task_ids: list[str] | None = None, repeats: int = 2) -
     if not isinstance(repeats, int) or isinstance(repeats, bool) or not 1 <= repeats <= MAX_REPEATS:
         raise EvaluationError(f"repeats must be an integer from 1 to {MAX_REPEATS}")
     selected = _selected_tasks(config, task_ids)
-    output = Path(output)
-    _require_new_directory(output)
+    requested_output = Path(output)
+    output = _require_new_directory(requested_output)
 
     entries: list[dict[str, Any]] = []
     for task in selected:
-        task_root = output / task["id"]
-        _require_new_directory(task_root)
+        task_root = _require_new_directory(output / task["id"])
         for repeat in range(1, repeats + 1):
             relative_workspace = f"{task['id']}/repeat-{repeat:02d}"
-            workspace = task_root / f"repeat-{repeat:02d}"
-            _require_new_directory(workspace)
+            workspace = _require_new_directory(task_root / f"repeat-{repeat:02d}")
             for file_entry in task["files"]:
                 destination = _workspace_file(workspace, file_entry["path"])
                 _ensure_directory(destination.parent)
@@ -263,12 +266,12 @@ def prepare(output: Path, task_ids: list[str] | None = None, repeats: int = 2) -
         "task_count": len(entries),
         "tasks": [entry["task_id"] for entry in entries],
         "repeats": repeats,
-        "output": str(output),
+        "output": str(requested_output),
     }
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    _check_parent(path)
+    path = _check_parent(path)
     if path.is_symlink() or not path.is_file():
         raise EvaluationError("input must be a regular, non-symlink JSON file")
     try:
@@ -497,8 +500,7 @@ def check(workspace: Path, *, execute: bool = False) -> dict[str, Any]:
     """Check invariants, with optional fixed behavior tests in a child process."""
     config = _load_config()
     tasks = _task_map(config)
-    root = Path(workspace)
-    _check_parent(root / METADATA_NAME)
+    root = _check_parent(Path(workspace) / METADATA_NAME).parent
     if root.is_symlink() or not root.is_dir():
         raise EvaluationError("workspace must be a regular, non-symlink directory")
     workspaces = _manifest_workspaces(root, tasks)
@@ -703,7 +705,7 @@ def _emit(payload: dict[str, Any], output: Path | None) -> None:
     if output is None:
         print(json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
         return
-    _check_parent(output)
+    output = _check_parent(output)
     if _lexists(output):
         raise EvaluationError("refusing to overwrite an existing or symlinked output")
     _write_json_new(output, payload)

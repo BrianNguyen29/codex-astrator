@@ -137,8 +137,9 @@ The source and installer require Python 3.11+. The checked-in
 [GitHub Actions workflow](.github/workflows/validate.yml) is configured to
 validate source parsing, layout, and focused tests independently on Windows,
 Ubuntu, and macOS with Python 3.11 only (`fail-fast: false`). This checkout
-does not claim hosted-CI results until a push runs that matrix, and the
-workflow does not exercise a live Codex host. Focused preview/apply tests use
+has an observed run for `b16999d`: Windows and Ubuntu passed, while the
+focused tests failed on macOS; later local fixes are not yet covered by a
+hosted rerun. The workflow does not exercise a live Codex host. Focused preview/apply tests use
 disposable targets; real-target permission behavior is not covered. Named
 model availability depends on the target host and account. The optional smoke
 protocol uses only a disposable project; read-only roles must not be tested

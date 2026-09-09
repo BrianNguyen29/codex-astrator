@@ -453,6 +453,17 @@ class InstallerTests(unittest.TestCase):
             b"*\n",
         )
         self.assertFalse(manifest_path.exists())
+        status = subprocess.run(
+            [
+                sys.executable, str(INSTALL), "status", "--scope", "project",
+                "--target", str(self.target),
+            ],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(status.returncode, 2)
+        self.assertIn("state=recovery-required", status.stdout)
+        self.assertNotIn("# original", status.stdout + status.stderr)
 
     def test_update_rejects_tracked_drift_even_with_replace(self) -> None:
         config = self.target / ".codex" / "config.toml"
@@ -723,6 +734,50 @@ class InstallerTests(unittest.TestCase):
         result = self.install()
         self.assertEqual(result.returncode, 2)
         self.assertFalse((outside / "skills").exists())
+
+    def test_source_above_boundary_symlink_is_allowed(self) -> None:
+        alias = self.base / "system alias"
+        try:
+            alias.symlink_to(self.base, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable on this platform")
+        result = subprocess.run(
+            [
+                sys.executable, str(INSTALL), "install", "--source", str(alias / self.source.name),
+                "--scope", "project", "--target", str(self.target), "--apply",
+            ],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_source_boundary_and_inner_payload_symlinks_are_refused(self) -> None:
+        outside = self.base / "outside source file"
+        outside.write_text('name = "default"\n', encoding="utf-8")
+        role = self.source / "payload" / "agents" / "default.toml"
+        role.unlink()
+        try:
+            role.symlink_to(outside)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable on this platform")
+        result = self.install()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("symlink", result.stderr)
+
+        role.unlink()
+        role.write_text('name = "default"\n', encoding="utf-8")
+        source_alias = self.base / "source boundary alias"
+        source_alias.symlink_to(self.source, target_is_directory=True)
+        boundary_result = subprocess.run(
+            [
+                sys.executable, str(INSTALL), "install", "--source", str(source_alias),
+                "--scope", "project", "--target", str(self.target), "--apply",
+            ],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(boundary_result.returncode, 2)
+        self.assertIn("symlink", boundary_result.stderr)
 
     def test_doctor_is_static_payload_check(self) -> None:
         result = subprocess.run(

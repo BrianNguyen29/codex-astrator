@@ -65,8 +65,9 @@ Both commands reject `--apply`, `--replace-existing`, and `--source`. Each
 prints one fixed summary line containing the state, scope, manifest status,
 managed-file and backup counts, and role-profile count; it never prints file
 contents, hashes, or backup names. `status` exits `0` for a healthy or absent
-installation (for example, a target with no manifest) and `2` for invalid or
-legacy state, drift, or a missing required managed/backup file. `verify`
+installation (no manifest and no retained recovery evidence) and `2` for invalid or
+legacy state, drift, recovery-required, unverified role integrity, or a missing
+required managed/backup file. `verify`
 requires a current healthy installation and exits `0` only for that state;
 absent installation, legacy or invalid state, drift, or a missing required
 file exits `2`.
@@ -75,6 +76,21 @@ Both checks validate the manifest schema and path allowlist, installed-file
 hashes, original-backup hashes, backup privacy rule, and declared role/profile
 consistency. They do not establish live model availability, runtime role
 execution, or that the installed source is current.
+
+`recovery-required` means retained transaction or orphan backup evidence needs
+inspection; neither command repairs or removes it. An ignore/lock marker alone
+does not imply a failed transaction. Keep recovery backups until the affected
+files have been reconciled.
+Without a manifest, ownership of arbitrary existing configuration cannot be
+reconstructed; `absent` means no manifest or retained backup evidence was
+found, not that every file in the target was independently classified.
+
+New v2 manifests record `expected_role_sha256` for every declared role, including
+preexisting byte-identical role files that the installer does not own. Role
+hash drift is unhealthy without changing ownership or authorizing deletion.
+Older v2 manifests without this metadata report `unverified` (exit 2); they
+remain readable by the existing update/uninstall workflow. A validated update
+can add the metadata, but status/verify never migrate a manifest themselves.
 
 Use `python scripts/install.py --help` for the installed CLI's complete option
 set. The command names above are the stable contract documented by this

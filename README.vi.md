@@ -136,8 +136,9 @@ Xem [chi tiết cài đặt và recovery](docs/installation.md) cùng
 Source và installer yêu cầu Python 3.11+. [GitHub Actions workflow](.github/workflows/validate.yml)
 trong repository được cấu hình kiểm tra độc lập parse source, layout và test
 tập trung trên Windows, Ubuntu và macOS, chỉ với Python 3.11
-(`fail-fast: false`). Checkout này chưa có bằng chứng CI hosted cho matrix đó
-cho đến khi push chạy workflow; workflow cũng không chạy trên Codex host thực.
+(`fail-fast: false`). Lần chạy cho `b16999d` đã pass trên Windows và Ubuntu
+nhưng test tập trung fail trên macOS; các bản sửa local sau đó chưa có lần
+chạy hosted mới. Workflow cũng không chạy trên Codex host thực.
 Test preview/apply tập trung chỉ dùng target disposable và không bao phủ quyền
 trên target thực. Model cụ thể phụ thuộc host và tài khoản đích. Smoke test tùy
 chọn chỉ dùng project disposable; không kiểm tra role read-only trên file

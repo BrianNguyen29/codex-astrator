@@ -75,6 +75,7 @@ class PlanSnapshot:
     manifest: PathSnapshot
     destinations: dict[str, PathSnapshot]
     backup_ignore: PathSnapshot
+    expected_role_sha256: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -753,12 +754,25 @@ def _has_unmanaged_orchestration(raw: bytes) -> bool:
 
 
 def _resolve_source(source: Path) -> tuple[Path, Path, Path, Path]:
+    # The source directory is the trust boundary.  Reject a link at that
+    # boundary, then canonicalize it so harmless platform aliases above it
+    # (for example macOS /var -> /private/var) are not treated as payload
+    # links.  _safe_join still rejects every link inside the boundary.
+    if source.is_symlink():
+        raise InstallerError(f"payload contains symlink: {source}")
+    try:
+        boundary = source.resolve(strict=True)
+    except OSError as exc:
+        raise InstallerError(f"payload source is unavailable: {source}") from exc
     candidates = [
-        (source / "profiles" / "reference.toml", source / "payload" / "agents", source / "payload" / "skills", source / "payload" / "instructions" / "orchestration.md"),
-        (source / "payload" / "profiles" / "reference.toml", source / "payload" / "agents", source / "payload" / "skills", source / "payload" / "instructions" / "orchestration.md"),
-        (source / "payload" / "reference.toml", source / "payload" / "agents", source / "payload" / "skills", source / "payload" / "instructions" / "orchestration.md"),
+        ("profiles/reference.toml", "payload/agents", "payload/skills", "payload/instructions/orchestration.md"),
+        ("payload/profiles/reference.toml", "payload/agents", "payload/skills", "payload/instructions/orchestration.md"),
+        ("payload/reference.toml", "payload/agents", "payload/skills", "payload/instructions/orchestration.md"),
     ]
-    for profile, agents, skills, instructions in candidates:
+    for relative_paths in candidates:
+        profile, agents, skills, instructions = (
+            _safe_join(boundary, relative) for relative in relative_paths
+        )
         if profile.is_file():
             return profile, agents, skills, instructions
     raise InstallerError(f"payload profile not found below {source}")
@@ -770,11 +784,10 @@ def _source_files(root: Path) -> Iterable[tuple[Path, str]]:
     if not root.exists():
         return []
     _assert_not_symlink(root, allow_missing=False)
-    cursor = root.parent
-    while cursor != cursor.parent:
-        if cursor.is_symlink():
-            raise InstallerError(f"payload path has symlink ancestor: {cursor}")
-        cursor = cursor.parent
+    try:
+        root = root.resolve(strict=True)
+    except OSError as exc:
+        raise InstallerError(f"cannot inspect payload directory: {root}") from exc
     result: list[tuple[Path, str]] = []
     for path in sorted(root.rglob("*")):
         if path.is_symlink():
@@ -842,6 +855,18 @@ def _load_manifest(target: Path, scope: str) -> tuple[Path, dict[str, Any] | Non
             )
         ):
             raise InstallerError("installer manifest has an invalid managed agent role set")
+    expected_role_sha256 = value.get("expected_role_sha256")
+    if value["version"] == MANIFEST_VERSION and "expected_role_sha256" in value and (
+        not isinstance(expected_role_sha256, dict)
+        or managed_agent_paths is None
+        or set(expected_role_sha256) != set(managed_agent_paths)
+        or any(
+            not isinstance(role_hash, str)
+            or re.fullmatch(r"[0-9a-f]{64}", role_hash) is None
+            for role_hash in expected_role_sha256.values()
+        )
+    ):
+        raise InstallerError("installer manifest has an invalid expected role hash map")
     seen: set[str] = set()
     seen_backups: set[str] = set()
     for entry in entries:
@@ -916,16 +941,51 @@ def _validate_installed_files(target: Path, manifest: dict[str, Any]) -> dict[st
     return snapshots
 
 
-def _validate_role_profile(path: Path, expected_name: str) -> bool:
-    """Validate only stable profile identity fields, not runtime availability."""
-    snapshot = _snapshot_file(path)
-    if not snapshot.exists:
-        return False
+def _recovery_artifacts_present(target: Path, manifest: dict[str, Any] | None) -> bool:
+    """Detect retained backup payloads without reading or revealing their content."""
     try:
-        profile = tomllib.loads((snapshot.content or b"").decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        backup_root = _safe_join(target, f".codex/{BACKUP_DIR_NAME}")
+        info = _lstat(backup_root)
+    except InstallerError:
+        return True
+    if info is None:
         return False
-    return profile.get("name") == expected_name
+    if backup_root.is_symlink() or not backup_root.is_dir():
+        return True
+
+    prefix = f".codex/{BACKUP_DIR_NAME}/"
+    allowed_files = {".gitignore"}
+    allowed_directories: set[str] = set()
+    for entry in (manifest or {}).get("entries", []):
+        backup = entry.get("backup")
+        if not isinstance(backup, str) or not backup.startswith(prefix):
+            continue
+        relative = backup[len(prefix):]
+        allowed_files.add(relative)
+        parts = relative.split("/")
+        allowed_directories.update("/".join(parts[:depth]) for depth in range(1, len(parts)))
+
+    pending = [(backup_root, "")]
+    while pending:
+        directory, parent_relative = pending.pop()
+        try:
+            children = list(os.scandir(directory))
+        except OSError:
+            return True
+        for child in children:
+            relative = f"{parent_relative}/{child.name}" if parent_relative else child.name
+            try:
+                if child.is_symlink():
+                    return True
+                if child.is_dir(follow_symlinks=False):
+                    if relative not in allowed_directories:
+                        return True
+                    pending.append((Path(child.path), relative))
+                elif not child.is_file(follow_symlinks=False) or relative not in allowed_files:
+                    return True
+            except OSError:
+                return True
+    return False
 
 
 def _inspect_installation(target: Path, scope: str) -> InstallationStatus:
@@ -935,6 +995,8 @@ def _inspect_installation(target: Path, scope: str) -> InstallationStatus:
     except InstallerError:
         return InstallationStatus("invalid", "invalid", None, None, None, None, None, None)
     if manifest is None:
+        if _recovery_artifacts_present(target, None):
+            return InstallationStatus("recovery-required", "missing", 0, 0, None, None, None, None)
         return InstallationStatus("absent", "missing", 0, 0, 0, 0, 0, 0)
     entries = manifest["entries"]
     backup_entries = [entry for entry in entries if entry.get("backup")]
@@ -943,6 +1005,9 @@ def _inspect_installation(target: Path, scope: str) -> InstallationStatus:
         return InstallationStatus(
             "legacy", "legacy", None, len(entries), None, len(backup_entries), None, len(roles)
         )
+
+    recovery_required = _recovery_artifacts_present(target, manifest)
+    expected_role_sha256 = manifest.get("expected_role_sha256")
 
     managed_ok = 0
     roles_ok = 0
@@ -954,12 +1019,17 @@ def _inspect_installation(target: Path, scope: str) -> InstallationStatus:
             continue
         if snapshot.exists and _sha256(snapshot.content or b"") == entry["installed_sha256"]:
             managed_ok += 1
-    for relative in roles:
-        try:
-            role_path = _safe_join(target, relative, allow_missing=False)
-            roles_ok += int(_validate_role_profile(role_path, Path(relative).stem))
-        except InstallerError:
-            pass
+    if expected_role_sha256 is not None:
+        for relative in roles:
+            try:
+                role_path = _safe_join(target, relative, allow_missing=False)
+                role_snapshot = _snapshot_file(role_path)
+                roles_ok += int(
+                    role_snapshot.exists
+                    and _sha256(role_snapshot.content or b"") == expected_role_sha256[relative]
+                )
+            except InstallerError:
+                pass
 
     backups_ok = len(backup_entries)  # _load_manifest hash-validates every declared backup.
     privacy_ok = True
@@ -971,20 +1041,28 @@ def _inspect_installation(target: Path, scope: str) -> InstallationStatus:
         _reject_tracked_backup_files(target)
     except InstallerError:
         privacy_ok = False
-    healthy = (
+    known_integrity_ok = (
         managed_ok == len(entries)
         and backups_ok == len(backup_entries)
-        and roles_ok == len(roles)
         and privacy_ok
     )
+    roles_integrity_ok = expected_role_sha256 is not None and roles_ok == len(roles)
+    if not known_integrity_ok or (expected_role_sha256 is not None and not roles_integrity_ok):
+        state = "drifted"
+    elif expected_role_sha256 is None:
+        state = "unverified"
+    else:
+        state = "healthy"
+    if recovery_required:
+        state = "recovery-required"
     return InstallationStatus(
-        "healthy" if healthy else "drifted",
+        state,
         "current",
         managed_ok,
         len(entries),
         backups_ok if privacy_ok else None,
         len(backup_entries),
-        roles_ok,
+        roles_ok if expected_role_sha256 is not None else None,
         len(roles),
     )
 
@@ -1062,8 +1140,12 @@ def _build_plan(target: Path, scope: str, source: Path, replace_existing: bool) 
     _reject_tracked_backup_files(target)
     _require_current_manifest(old_manifest, "install/update")
     installed_snapshots = _validate_installed_files(target, old_manifest) if old_manifest is not None else {}
-    agent_files = list(_source_files(agents_root))
-    source_agent_paths = sorted(f".codex/agents/{relative}" for _, relative in agent_files)
+    agent_files = [(path, relative, _read_bytes(path)) for path, relative in _source_files(agents_root)]
+    source_agent_paths = sorted(f".codex/agents/{relative}" for _, relative, _ in agent_files)
+    expected_role_sha256 = {
+        f".codex/agents/{relative}": _sha256(content)
+        for _, relative, content in agent_files
+    }
     if old_manifest is not None:
         installed_agent_paths = old_manifest.get("managed_agent_paths")
         if installed_agent_paths is None:
@@ -1089,6 +1171,19 @@ def _build_plan(target: Path, scope: str, source: Path, replace_existing: bool) 
     for entry in (old_manifest or {}).get("entries", []):
         destination_snapshot(entry["path"])
 
+    # A byte-identical preexisting role is declared but intentionally remains
+    # unowned.  Once a hash is available, require explicit replacement consent
+    # before adopting any altered bytes as the new expected state.
+    old_expected_roles = (old_manifest or {}).get("expected_role_sha256") or {}
+    owned_paths = {entry["path"] for entry in (old_manifest or {}).get("entries", [])}
+    role_drift_conflicts: list[str] = []
+    for relative, expected_hash in old_expected_roles.items():
+        if relative in owned_paths:
+            continue
+        role_snapshot = destination_snapshot(relative)
+        if not role_snapshot.exists or _sha256(role_snapshot.content or b"") != expected_hash:
+            role_drift_conflicts.append(relative)
+
     config_path = _safe_join(target, config_rel)
     config_snapshot = destination_snapshot(config_rel)
     existing_config = config_snapshot.content if config_snapshot.exists else b""
@@ -1099,7 +1194,7 @@ def _build_plan(target: Path, scope: str, source: Path, replace_existing: bool) 
         # with tables inserted only as needed.
         config_content, config_conflicts = _merge_profile(b"", profile, replace_existing)
     plan: list[PlannedFile] = []
-    conflicts: list[str] = list(config_conflicts)
+    conflicts: list[str] = list(config_conflicts) + role_drift_conflicts
     if config_content != existing_config:
         plan.append(PlannedFile(config_rel, config_content, "merge reference profile"))
     agents_path = _safe_join(target, agents_rel)
@@ -1108,14 +1203,13 @@ def _build_plan(target: Path, scope: str, source: Path, replace_existing: bool) 
     agents_content = _merge_agents(agents_existing, instructions)
     if agents_content != agents_existing:
         plan.append(PlannedFile(agents_rel, agents_content, "update managed instructions block"))
-    for file, relative in agent_files:
+    for file, relative, new in agent_files:
         if "/" in relative or not relative.lower().endswith(".toml"):
             raise InstallerError(f"agent payload must be TOML: {file}")
         destination = f".codex/agents/{relative}"
         destination_path = _safe_join(target, destination)
         old_snapshot = destination_snapshot(destination)
         old = old_snapshot.content if old_snapshot.exists else b""
-        new = _read_bytes(file)
         if old != new:
             if old_snapshot.exists:
                 conflicts.append(destination)
@@ -1132,7 +1226,9 @@ def _build_plan(target: Path, scope: str, source: Path, replace_existing: bool) 
             if old_snapshot.exists:
                 conflicts.append(destination)
             plan.append(PlannedFile(destination, new, "install skill file"))
-    snapshot = PlanSnapshot(manifest_snapshot, destination_snapshots, backup_ignore_snapshot)
+    snapshot = PlanSnapshot(
+        manifest_snapshot, destination_snapshots, backup_ignore_snapshot, expected_role_sha256
+    )
     return plan, sorted(set(conflicts)), old_manifest, manifest_path, source_agent_paths, snapshot
 
 
@@ -1253,6 +1349,7 @@ def _apply_plan(target: Path, scope: str, plan: list[PlannedFile], old_manifest:
             "version": MANIFEST_VERSION,
             "scope": scope,
             "managed_agent_paths": managed_agent_paths,
+            "expected_role_sha256": snapshot.expected_role_sha256,
             "entries": entries,
         }
         for item in plan:
@@ -1443,7 +1540,9 @@ def main(argv: list[str] | None = None) -> int:
         source = Path(args.source).expanduser().absolute() if args.source else Path(__file__).resolve().parents[1]
         def install_or_preview() -> int:
             global _FAIL_AFTER
-            if not source.exists() or source.is_symlink():
+            if source.is_symlink():
+                raise InstallerError(f"payload source is a symlink: {source}")
+            if not source.exists():
                 raise InstallerError(f"payload source is unavailable: {source}")
             plan, conflicts, old_manifest, manifest_path, managed_agent_paths, snapshot = _build_plan(
                 target, args.scope, source, args.replace_existing

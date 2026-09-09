@@ -15,7 +15,8 @@ All notable changes are recorded here. The project is preparing a planned
 
 - The validation workflow now defines independent Windows, Ubuntu, and macOS
   jobs with Python 3.11 only and `fail-fast: false`; hosted matrix results
-  remain pending until that workflow runs after a push.
+  for `b16999d` passed on Windows and Ubuntu and failed focused tests on macOS;
+  later portability fixes remain pending hosted verification.
 - Read-only installer `status` and `verify` checks document installation state
   without exposing file contents, hashes, or backup names. Mutating applies use
   a per-target cooperative lock while preserving snapshot checks for external
