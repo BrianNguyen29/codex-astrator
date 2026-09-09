@@ -988,6 +988,18 @@ def _recovery_artifacts_present(target: Path, manifest: dict[str, Any] | None) -
     return False
 
 
+def _require_recovery_safe(
+    target: Path, manifest: dict[str, Any] | None, operation: str
+) -> None:
+    """Block mutations while unreferenced recovery payloads need reconciliation."""
+    if _recovery_artifacts_present(target, manifest):
+        raise InstallerError(
+            f"recovery-required: retained or unrecognized recovery artifacts block {operation}; "
+            "current files, manifest, and backups were preserved. Reconcile the contents below "
+            f".codex/{BACKUP_DIR_NAME} before retrying"
+        )
+
+
 def _inspect_installation(target: Path, scope: str) -> InstallationStatus:
     """Return an aggregate, content-free point-in-time integrity report."""
     try:
@@ -1138,6 +1150,7 @@ def _build_plan(target: Path, scope: str, source: Path, replace_existing: bool) 
     backup_ignore_snapshot = _snapshot_file(_backup_ignore_path(target))
     _validate_backup_ignore(backup_ignore_snapshot)
     _reject_tracked_backup_files(target)
+    _require_recovery_safe(target, old_manifest, "install/update")
     _require_current_manifest(old_manifest, "install/update")
     installed_snapshots = _validate_installed_files(target, old_manifest) if old_manifest is not None else {}
     agent_files = [(path, relative, _read_bytes(path)) for path, relative in _source_files(agents_root)]
@@ -1240,13 +1253,20 @@ def _print_plan(
     replace_existing: bool,
     protect_backups: bool,
     unmanaged_orchestration: bool,
+    migrate_manifest_metadata: bool,
 ) -> None:
     mode = "APPLY" if apply else "PREVIEW"
-    print(f"{mode}: {len(plan) + int(protect_backups)} file change(s)")
+    change_count = len(plan) + int(protect_backups) + int(migrate_manifest_metadata)
+    print(f"{mode}: {change_count} file change(s)")
     for item in plan:
         print(f"  {item.rel}: {item.reason}")
     if protect_backups:
         print(f"  .codex/{BACKUP_DIR_NAME}/.gitignore: protect local recovery backups from normal Git staging")
+    if migrate_manifest_metadata:
+        print(
+            f"  .codex/{MANIFEST_NAME}: add role integrity metadata "
+            "(ownership and backups unchanged)"
+        )
     if unmanaged_orchestration:
         print("WARNING: existing unmanaged orchestration-like instructions in AGENTS.md were preserved")
         print("  review them with the managed block for conflicts; the installer does not claim the combined policy is coherent")
@@ -1309,6 +1329,7 @@ def _remove_file(path: Path) -> None:
 
 def _apply_plan(target: Path, scope: str, plan: list[PlannedFile], old_manifest: dict[str, Any] | None, manifest_path: Path, managed_agent_paths: list[str], snapshot: PlanSnapshot) -> None:
     global _FAIL_AFTER
+    _require_recovery_safe(target, old_manifest, "install/update")
     _revalidate_snapshot(manifest_path, snapshot.manifest, label="installer manifest")
     for relative, expected in snapshot.destinations.items():
         _revalidate_snapshot(_safe_join(target, relative), expected, label=relative)
@@ -1402,6 +1423,7 @@ def _apply_plan(target: Path, scope: str, plan: list[PlannedFile], old_manifest:
 
 def _uninstall(target: Path, scope: str, manifest_path: Path, manifest: dict[str, Any], manifest_snapshot: PathSnapshot, *, apply: bool) -> None:
     _require_current_manifest(manifest, "uninstall")
+    _require_recovery_safe(target, manifest, "uninstall")
     entries = manifest["entries"]
     # Hash-check everything before any writes/deletes, so one edited file never
     # produces a half-uninstalled installation.
@@ -1549,6 +1571,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             agents_rel = ".codex/AGENTS.md" if args.scope == "global" else "AGENTS.md"
             agents_snapshot = snapshot.destinations[agents_rel]
+            migrate_manifest_metadata = (
+                old_manifest is not None
+                and "expected_role_sha256" not in old_manifest
+            )
             _print_plan(
                 plan,
                 conflicts,
@@ -1559,6 +1585,7 @@ def main(argv: list[str] | None = None) -> int:
                     agents_snapshot.exists
                     and _has_unmanaged_orchestration(agents_snapshot.content or b"")
                 ),
+                migrate_manifest_metadata=migrate_manifest_metadata,
             )
             if conflicts and (not args.apply or not args.replace_existing):
                 return 3

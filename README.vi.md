@@ -134,15 +134,16 @@ Xem [chi tiết cài đặt và recovery](docs/installation.md) cùng
 ## Tương thích và xác minh
 
 Source và installer yêu cầu Python 3.11+. [GitHub Actions workflow](.github/workflows/validate.yml)
-trong repository được cấu hình kiểm tra độc lập parse source, layout và test
-tập trung trên Windows, Ubuntu và macOS, chỉ với Python 3.11
-(`fail-fast: false`). Lần chạy cho `b16999d` đã pass trên Windows và Ubuntu
-nhưng test tập trung fail trên macOS; các bản sửa local sau đó chưa có lần
-chạy hosted mới. Workflow cũng không chạy trên Codex host thực.
-Test preview/apply tập trung chỉ dùng target disposable và không bao phủ quyền
-trên target thực. Model cụ thể phụ thuộc host và tài khoản đích. Smoke test tùy
-chọn chỉ dùng project disposable; không kiểm tra role read-only trên file
-project thực.
+trong repository kiểm tra độc lập việc parse source, layout và test tập trung
+trên Windows, Ubuntu và macOS với Python 3.11, cộng thêm một job Ubuntu với
+Python 3.12 (`fail-fast: false`, tổng cộng bốn job). Một [lần chạy đã quan sát
+ở đúng revision `96cbc6a`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34314915552)
+đã pass cả ba job Python 3.11. Lần chạy đó chưa bao phủ job Ubuntu 3.12 mới
+thêm và không xác nhận workflow hiện tại sau chỉnh sửa; cần có hosted rerun.
+Workflow cũng không chạy trên Codex host thực. Test preview/apply tập trung
+chỉ dùng target disposable và không bao phủ quyền trên target thực. Model cụ
+thể phụ thuộc host và tài khoản đích. Smoke test tùy chọn chỉ dùng project
+disposable; không kiểm tra role read-only trên file project thực.
 
 Dự án không hứa hẹn tiết kiệm token hay giảm chi phí. Hãy đo workload tiêu
 biểu theo hướng dẫn tại [Token usage](docs/token-usage.md).

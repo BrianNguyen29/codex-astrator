@@ -14,24 +14,27 @@ model.
 ## Validation status
 
 The checked-in workflow is configured as independent jobs on
-`windows-latest`, `ubuntu-latest`, and `macos-latest`, with Python 3.11 only
-and `fail-fast: false`. It parses the payload, runs `doctor`, and runs the
-focused tests on each matrix entry. The
-[observed run for b16999d](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34311240409)
-passed on Windows and Ubuntu, but failed the focused tests on macOS. Parsing
-and doctor passed on all three hosts. These results apply to that revision,
-not to subsequent local fixes. The workflow does not exercise a live Codex
-host or a real user project.
-Broaden the Python matrix only after the initial three-host run has produced
-evidence.
+`windows-latest`, `ubuntu-latest`, and `macos-latest` with Python 3.11, plus
+one `ubuntu-latest` job with Python 3.12. `fail-fast: false` keeps all four
+matrix jobs independent. It parses the payload, runs `doctor`, and runs the
+focused tests on each matrix entry.
 
-| Surface | Windows + Python 3.11 | Ubuntu + Python 3.11 | macOS + Python 3.11 | Live Codex runtime |
-| --- | --- | --- | --- | --- |
-| Payload and reference-profile TOML parsing at b16999d | Passed | Passed | Passed | Unverified |
-| `doctor` layout check at b16999d | Passed | Passed | Passed | Unverified |
-| Focused tests at b16999d | Passed | Passed | Failed | Unverified |
-| Live Codex host loading and role execution | Not covered by CI | Not covered by CI | Not covered by CI | Unverified |
-| Installer preview/apply filesystem behavior | Covered by focused tests using disposable targets; real-target permissions are not covered | Same | Same | Unverified |
+An [observed run at the exact revision
+`96cbc6a`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34314915552)
+passed parsing, `doctor`, and focused tests on all three Python 3.11 hosts.
+That run predates the added Ubuntu 3.12 matrix entry, so it is not evidence for
+that job or for the current modified workflow; a hosted rerun is still
+required. The workflow does not exercise a live Codex host or a real user
+project.
+
+| Surface | Windows + Python 3.11 | Ubuntu + Python 3.11 | Ubuntu + Python 3.12 | macOS + Python 3.11 | Live Codex runtime |
+| --- | --- | --- | --- | --- | --- |
+| Matrix configuration in the current workflow | Configured | Configured | Configured | Configured | Unverified |
+| Payload and reference-profile TOML parsing at 96cbc6a | Passed | Passed | Not covered by observed run | Passed | Unverified |
+| `doctor` layout check at 96cbc6a | Passed | Passed | Not covered by observed run | Passed | Unverified |
+| Focused tests at 96cbc6a | Passed | Passed | Not covered by observed run | Passed | Unverified |
+| Live Codex host loading and role execution | Not covered by CI | Not covered by CI | Not covered by CI | Not covered by CI | Unverified |
+| Installer preview/apply filesystem behavior | Covered by focused tests using disposable targets; real-target permissions are not covered | Same | Same | Same | Unverified |
 
 Run the focused tests and `doctor` check in each target environment before
 relying on an installation there.

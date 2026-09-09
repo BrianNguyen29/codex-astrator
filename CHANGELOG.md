@@ -10,13 +10,24 @@ All notable changes are recorded here. The project is preparing a planned
 - Profile merging now handles quoted and dotted TOML table headers without
   duplicating or misplacing managed keys, while preserving unrelated comments
   and values.
+- The validation workflow now keeps independent Windows, Ubuntu, and macOS
+  Python 3.11 jobs and adds only one Ubuntu Python 3.12 job with
+  `fail-fast: false` (four jobs total). An [observed run at exact revision
+  `96cbc6a`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34314915552)
+  passed all three Python 3.11 jobs; it does not cover the added Ubuntu 3.12
+  job or verify the current modified workflow.
+- Install/update and uninstall now block on unrecognized recovery artifacts,
+  including in read-only previews, preserving current files, manifests, and
+  recovery bytes until manual reconciliation. The apply guard repeats after
+  the per-target lock and before writes or deletes; `--replace-existing` does
+  not bypass it.
+- Current v2 manifests without `expected_role_sha256` now have an explicit
+  metadata-only install/update migration. The preview counts the manifest
+  change, and apply records role hashes while preserving ownership and backup
+  entries; `status` and `verify` never migrate manifests.
 
 ### Added
 
-- The validation workflow now defines independent Windows, Ubuntu, and macOS
-  jobs with Python 3.11 only and `fail-fast: false`; hosted matrix results
-  for `b16999d` passed on Windows and Ubuntu and failed focused tests on macOS;
-  later portability fixes remain pending hosted verification.
 - Read-only installer `status` and `verify` checks document installation state
   without exposing file contents, hashes, or backup names. Mutating applies use
   a per-target cooperative lock while preserving snapshot checks for external

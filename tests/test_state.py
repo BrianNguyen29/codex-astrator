@@ -159,10 +159,23 @@ class StateCommandTests(unittest.TestCase):
         self.assertEqual(removed.returncode, 0, removed.stderr)
         self.assertEqual(role.read_bytes(), altered)
 
-    def test_old_v2_without_role_hashes_is_explicitly_unverified_and_uninstallable(self) -> None:
+    def test_old_v2_without_role_hashes_previews_and_applies_metadata_migration(self) -> None:
+        config = self.target / ".codex" / "config.toml"
+        config.parent.mkdir(parents=True)
+        config.write_bytes(b"# original config\n")
+        unowned_role = self.target / ".codex" / "agents" / "worker.toml"
+        unowned_role.parent.mkdir(parents=True)
+        unowned_role.write_bytes((ROOT / "payload" / "agents" / "worker.toml").read_bytes())
         self.assertEqual(self.install().returncode, 0)
         manifest_path = self.target / ".codex" / "astrator-manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertNotIn(
+            ".codex/agents/worker.toml",
+            {entry["path"] for entry in manifest["entries"]},
+        )
+        backup_rel = next(entry["backup"] for entry in manifest["entries"] if entry.get("backup"))
+        backup_path = self.target.joinpath(*backup_rel.split("/"))
+        backup_before = backup_path.read_bytes()
         manifest.pop("expected_role_sha256")
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         before = {path: path.read_bytes() for path in self.target.rglob("*") if path.is_file()}
@@ -171,8 +184,54 @@ class StateCommandTests(unittest.TestCase):
         self.assertIn("state=unverified", status.stdout)
         self.assertIn("roles=unknown", status.stdout)
         self.assertEqual(before, {path: path.read_bytes() for path in self.target.rglob("*") if path.is_file()})
-        removed = self.run_cli("uninstall", "--apply")
-        self.assertEqual(removed.returncode, 0, removed.stderr)
+
+        preview = subprocess.run(
+            [
+                sys.executable, str(INSTALL), "install", "--source", str(ROOT),
+                "--scope", "project", "--target", str(self.target),
+            ],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertIn("PREVIEW: 1 file change(s)", preview.stdout)
+        self.assertIn("add role integrity metadata", preview.stdout)
+        self.assertIn("ownership and backups unchanged", preview.stdout)
+        self.assertNotIn("sha256", preview.stdout.lower())
+        self.assertEqual(before, {path: path.read_bytes() for path in self.target.rglob("*") if path.is_file()})
+
+        migrated = self.install()
+        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        updated = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(updated["entries"], manifest["entries"])
+        self.assertEqual(updated["managed_agent_paths"], manifest["managed_agent_paths"])
+        self.assertNotIn(
+            ".codex/agents/worker.toml",
+            {entry["path"] for entry in updated["entries"]},
+        )
+        self.assertEqual(backup_path.read_bytes(), backup_before)
+        self.assertEqual(
+            set(updated["expected_role_sha256"]),
+            set(updated["managed_agent_paths"]),
+        )
+        self.assertEqual(self.run_cli("verify").returncode, 0)
+
+    def test_old_v2_without_role_hashes_remains_directly_uninstallable(self) -> None:
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT / "scripts"))
+        import install as installer
+
+        self.assertEqual(self.install().returncode, 0)
+        manifest_path = self.target / ".codex" / "astrator-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.pop("expected_role_sha256")
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        loaded_path, loaded, snapshot = installer._load_manifest(self.target, "project")
+        self.assertIsNotNone(loaded)
+
+        installer._uninstall(
+            self.target, "project", loaded_path, loaded, snapshot, apply=True
+        )
         self.assertFalse(manifest_path.exists())
 
     def test_present_role_hash_map_must_be_complete_and_well_formed(self) -> None:

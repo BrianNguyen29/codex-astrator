@@ -26,10 +26,13 @@ Current local implementation and pilot evidence is recorded in
 
 ## Behavior and compatibility
 
-- [ ] Push the candidate revision and observe all three independent workflow
-      jobs: Windows, Ubuntu, and macOS, each with Python 3.11. Record the run
-      revision and job conclusions; do not infer hosted results before this
-      step.
+- [ ] Push the candidate revision and observe all four independent workflow
+      jobs: Windows/Python 3.11, Ubuntu/Python 3.11, Ubuntu/Python 3.12, and
+      macOS/Python 3.11. Record the run revision and job conclusions; do not
+      infer hosted results before this step. The [observed run at exact
+      revision `96cbc6a`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34314915552)
+      passed the three Python 3.11 jobs, but predates the added Ubuntu 3.12
+      entry and does not satisfy this four-job gate.
 - [ ] Review preview output for project and global scopes using disposable
       targets; apply only after reviewing exact paths and collisions.
 - [ ] On disposable targets, exercise read-only `status` for absent and healthy
@@ -42,15 +45,17 @@ Current local implementation and pilot evidence is recorded in
       evidence. Read-only roles must be scoped to synthetic files; any routine
       write-capable role test must write only disposable synthetic files. Do
       not test real-target permissions.
-- [ ] Validate current hardening for unmanaged orchestration warnings and
-      `.codex/.astrator-backups/.gitignore` protection before backup bytes are
-      written, including clear preview disclosure. Treat failures as release
-      blockers; if Git is unavailable, record tracked-content detection as
-      unavailable; verify rollback retains a newly created protective file; do
-      not assume undocumented flags.
+- [ ] Validate current hardening for unmanaged orchestration warnings,
+      `.codex/.astrator-backups/.gitignore` protection, and the recovery
+      mutation guard before backup bytes are written, including clear preview
+      disclosure. Confirm retained transaction/orphan artifacts block both
+      preview and apply without mutation, while referenced backups remain
+      allowed. Treat failures as release blockers; if Git is unavailable,
+      record tracked-content detection as unavailable; verify rollback retains
+      a newly created protective file; do not assume undocumented flags.
 - [ ] Confirm the compatibility matrix still distinguishes Windows/Python
-      3.11, Ubuntu/Python 3.11, and macOS/Python 3.11 workflow coverage from
-      unverified live Codex runtime behavior.
+      3.11, Ubuntu/Python 3.11, Ubuntu/Python 3.12, and macOS/Python 3.11
+      workflow coverage from unverified live Codex runtime behavior.
 - [ ] Sanitize every report: never upload configs, manifests, backups, logs,
       prompts, credentials, or personal paths.
 

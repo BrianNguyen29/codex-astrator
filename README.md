@@ -134,16 +134,18 @@ See [installation and recovery details](docs/installation.md) and the
 ## Compatibility and verification
 
 The source and installer require Python 3.11+. The checked-in
-[GitHub Actions workflow](.github/workflows/validate.yml) is configured to
-validate source parsing, layout, and focused tests independently on Windows,
-Ubuntu, and macOS with Python 3.11 only (`fail-fast: false`). This checkout
-has an observed run for `b16999d`: Windows and Ubuntu passed, while the
-focused tests failed on macOS; later local fixes are not yet covered by a
-hosted rerun. The workflow does not exercise a live Codex host. Focused preview/apply tests use
-disposable targets; real-target permission behavior is not covered. Named
-model availability depends on the target host and account. The optional smoke
-protocol uses only a disposable project; read-only roles must not be tested
-against real project files.
+[GitHub Actions workflow](.github/workflows/validate.yml) validates source
+parsing, layout, and focused tests independently on Windows, Ubuntu, and macOS
+with Python 3.11, plus one Ubuntu job with Python 3.12
+(`fail-fast: false`, four jobs total). An [observed run at the exact revision
+`96cbc6a`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34314915552)
+passed all three Python 3.11 jobs. That run does not cover the added Ubuntu
+3.12 job and does not verify the current modified workflow; a hosted rerun is
+required. The workflow does not exercise a live Codex host. Focused
+preview/apply tests use disposable targets; real-target permission behavior is
+not covered. Named model availability depends on the target host and account.
+The optional smoke protocol uses only a disposable project; read-only roles
+must not be tested against real project files.
 
 This project makes no token-savings or cost-reduction promise. Measure
 representative workloads using the guidance in [Token usage](docs/token-usage.md).

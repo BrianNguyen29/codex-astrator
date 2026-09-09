@@ -11,14 +11,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Start with one supported Python version; broaden only after the
-        # current matrix has produced evidence on every host.
+        # Keep the baseline on every host and probe the newer interpreter on
+        # Ubuntu without multiplying every OS/version combination.
         os:
           - windows-latest
           - ubuntu-latest
           - macos-latest
         python-version:
           - "3.11"
+        include:
+          - os: ubuntu-latest
+            python-version: "3.12"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

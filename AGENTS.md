@@ -46,7 +46,11 @@ python scripts/doctor.py --source .
 ```
 
 The CI workflow is configured for independent Windows, Ubuntu, and macOS jobs
-with Python 3.11 only. This is source-level matrix coverage, not evidence that
-a live Codex host or runtime is compatible; hosted results must be verified
-after the workflow runs. Report checks that could not run instead of treating
-them as passing.
+with Python 3.11, plus one Ubuntu job with Python 3.12 (`fail-fast: false`,
+four jobs total). This is source-level matrix coverage, not evidence that a
+live Codex host or runtime is compatible. The [observed run at revision
+`96cbc6a`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34314915552)
+passed all three Python 3.11 jobs; it predates the added Ubuntu 3.12 matrix
+entry and does not verify the current modified workflow. Hosted results must
+be verified after the workflow runs. Report checks that could not run instead
+of treating them as passing.

@@ -53,12 +53,85 @@ class InstallerTests(unittest.TestCase):
     def install(self, *extra: str) -> subprocess.CompletedProcess[str]:
         return self.run_cli("--scope", "project", "--target", str(self.target), "--apply", *extra)
 
+    def snapshot_files(self) -> dict[str, bytes]:
+        return {
+            path.relative_to(self.target).as_posix(): path.read_bytes()
+            for path in self.target.rglob("*")
+            if path.is_file()
+        }
+
     def test_preview_is_read_only(self) -> None:
         result = self.run_cli("--scope", "project", "--target", str(self.target))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(list(self.target.iterdir()), [])
         self.assertIn("PREVIEW", result.stdout)
         self.assertIn(".codex/.astrator-backups/.gitignore", result.stdout)
+
+    def test_recovery_transaction_without_manifest_blocks_every_install_mode(self) -> None:
+        backup_root = self.target / ".codex" / ".astrator-backups"
+        payload = backup_root / ".txn-interrupted" / "recovery.bak"
+        payload.parent.mkdir(parents=True)
+        (backup_root / ".gitignore").write_bytes(b"*\n")
+        payload.write_bytes(b"retained recovery bytes")
+        (self.target / ".codex" / ".astrator.lock").write_bytes(
+            b"codex-astrator installer lock\n"
+        )
+        before = self.snapshot_files()
+
+        for extra in ((), ("--apply",), ("--apply", "--replace-existing")):
+            with self.subTest(extra=extra):
+                result = self.run_cli(
+                    "--scope", "project", "--target", str(self.target), *extra
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("recovery-required", result.stderr)
+                self.assertEqual(self.snapshot_files(), before)
+
+    def test_unreferenced_recovery_payload_blocks_update_and_uninstall(self) -> None:
+        self.assertEqual(self.install().returncode, 0)
+        backup_root = self.target / ".codex" / ".astrator-backups"
+
+        for directory in (".txn-interrupted", "orphan-backup"):
+            with self.subTest(directory=directory):
+                payload = backup_root / directory / "recovery.bak"
+                payload.parent.mkdir(parents=True)
+                payload.write_bytes(b"retained recovery bytes")
+                before = self.snapshot_files()
+                commands = (
+                    ("--scope", "project", "--target", str(self.target)),
+                    (
+                        "--scope", "project", "--target", str(self.target),
+                        "--apply", "--replace-existing",
+                    ),
+                    ("uninstall", "--scope", "project", "--target", str(self.target)),
+                    (
+                        "uninstall", "--scope", "project", "--target", str(self.target),
+                        "--apply",
+                    ),
+                )
+                for command in commands:
+                    result = self.run_cli(*command)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn("recovery-required", result.stderr)
+                    self.assertEqual(self.snapshot_files(), before)
+                payload.unlink()
+                payload.parent.rmdir()
+
+    def test_referenced_backup_and_benign_marker_allow_repeat_apply(self) -> None:
+        config = self.target / ".codex" / "config.toml"
+        config.parent.mkdir()
+        config.write_bytes(b"# original config\n")
+        self.assertEqual(self.install().returncode, 0)
+        manifest_path = self.target / ".codex" / "astrator-manifest.json"
+        before = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertTrue(any(entry.get("backup") for entry in before["entries"]))
+
+        preview = self.run_cli("--scope", "project", "--target", str(self.target))
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        repeated = self.install()
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        after = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(after["entries"], before["entries"])
 
     def test_unmanaged_orchestration_warning_preserves_legacy_content(self) -> None:
         agents = self.target / "AGENTS.md"
@@ -587,6 +660,35 @@ class InstallerTests(unittest.TestCase):
         }
         self.assertEqual(after_files, before_files)
         self.assertEqual(manifest_path.read_bytes(), intervening)
+
+    def test_direct_mutation_functions_recheck_recovery_guard(self) -> None:
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT / "scripts"))
+        import install as installer
+
+        self.assertEqual(self.install().returncode, 0)
+        plan, conflicts, old_manifest, manifest_path, managed_agent_paths, snapshot = installer._build_plan(
+            self.target, "project", self.source, False
+        )
+        self.assertEqual(conflicts, [])
+        loaded_path, manifest, manifest_snapshot = installer._load_manifest(self.target, "project")
+        self.assertIsNotNone(manifest)
+        payload = self.target / ".codex" / ".astrator-backups" / ".txn-late" / "recovery.bak"
+        payload.parent.mkdir()
+        payload.write_bytes(b"late recovery bytes")
+        before = self.snapshot_files()
+
+        with self.assertRaisesRegex(installer.InstallerError, "recovery-required"):
+            installer._apply_plan(
+                self.target, "project", plan, old_manifest, manifest_path,
+                managed_agent_paths, snapshot,
+            )
+        with self.assertRaisesRegex(installer.InstallerError, "recovery-required"):
+            installer._uninstall(
+                self.target, "project", loaded_path, manifest, manifest_snapshot,
+                apply=True,
+            )
+        self.assertEqual(self.snapshot_files(), before)
 
     def test_install_uses_same_manifest_bytes_for_parse_and_snapshot(self) -> None:
         import sys as _sys

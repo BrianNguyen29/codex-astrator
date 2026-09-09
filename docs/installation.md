@@ -4,7 +4,9 @@ Install/update and uninstall precheck file hashes before changing files and
 attempt rollback after a write failure. An I/O or rollback failure can still
 require manual recovery from retained backups. Mutating applies coordinate with
 other cooperating installer processes, but the target should remain quiescent
-while an apply operation is running.
+while an apply operation is running. A recovery mutation guard also blocks
+install/update and uninstall when unrecognized recovery artifacts need manual
+reconciliation.
 
 The installer is a local Python command-line tool. It does not download
 dependencies, install Codex, select a model, modify authentication, or publish
@@ -81,6 +83,15 @@ execution, or that the installed source is current.
 inspection; neither command repairs or removes it. An ignore/lock marker alone
 does not imply a failed transaction. Keep recovery backups until the affected
 files have been reconciled.
+
+The recovery mutation guard permits only the protective `.gitignore` and backup
+files referenced by the loaded manifest. Any other transaction or orphan
+artifact blocks install/update and uninstall, including their previews. A
+blocked preview remains read-only, exits `2`, and reports a content-free
+`recovery-required` error. The apply path repeats the guard after acquiring the
+per-target lock and before any managed, backup, or manifest write/delete;
+`--replace-existing` cannot bypass it. Current files, the manifest, and
+recovery bytes are preserved until manual reconciliation.
 Without a manifest, ownership of arbitrary existing configuration cannot be
 reconstructed; `absent` means no manifest or retained backup evidence was
 found, not that every file in the target was independently classified.
@@ -88,9 +99,14 @@ found, not that every file in the target was independently classified.
 New v2 manifests record `expected_role_sha256` for every declared role, including
 preexisting byte-identical role files that the installer does not own. Role
 hash drift is unhealthy without changing ownership or authorizing deletion.
-Older v2 manifests without this metadata report `unverified` (exit 2); they
-remain readable by the existing update/uninstall workflow. A validated update
-can add the metadata, but status/verify never migrate a manifest themselves.
+Older v2 manifests without this metadata report `unverified` (exit 2), but are
+eligible for an explicit install/update migration. Its preview reports one
+manifest metadata change even when no payload file changes are needed and says
+that role-integrity metadata will be added with ownership and backup entries
+unchanged; it does not print hash values. Apply writes the role hashes while
+preserving those ownership and backup entries, after which `verify` can report
+healthy when all checks pass. `status` and `verify` never migrate a manifest
+themselves.
 
 Use `python scripts/install.py --help` for the installed CLI's complete option
 set. The command names above are the stable contract documented by this
@@ -183,6 +199,12 @@ check, so keep the target quiescent during `--apply`.
   Compare each installed file with its referenced backup, decide what to keep,
   and remove the legacy manifest only after manual reconciliation. No automatic
   restore or migration is performed.
+- **Old v2 role metadata:** A current v2 manifest without
+  `expected_role_sha256` is explicitly `unverified`. Preview the install/update
+  to review its one metadata-only manifest change, then use `--apply` to record
+  role hashes while preserving ownership and backup entries. `status` and
+  `verify` do not perform this migration; reconcile any `recovery-required`
+  artifacts first.
 - **Role unavailable:** Model IDs, efforts, and access modes are requests, not
   host guarantees. Check the target host/account and the execution trace. If a
   role or model is unavailable, report it and use only a fallback that the

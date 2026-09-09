@@ -27,6 +27,15 @@ content fail closed. If Git is unavailable, tracked-content detection is
 unavailable and is not evidence that the backup is untracked. A newly created
 protective `.gitignore` is intentionally retained if an apply rolls back.
 
+The recovery mutation guard allows only that protective `.gitignore` and backup
+files referenced by the loaded manifest. Retained transaction or orphan
+artifacts block install/update and uninstall, including read-only previews. A
+blocked preview exits `2` with a content-free `recovery-required` result and
+does not mutate the target. Apply repeats the guard after acquiring the
+per-target cooperative lock and before any managed, backup, or manifest
+write/delete; `--replace-existing` cannot bypass it. Reconcile the current
+files and recovery bytes manually before retrying.
+
 ## Approval boundaries
 
 Review the dry-run before `--apply`. Existing files require the explicit
@@ -41,6 +50,13 @@ hashes before planning, snapshots the manifest and relevant destinations, and
 rechecks the snapshot immediately before writing. Legacy safety-version
 manifests block automatic install/update and uninstall; their current files and
 backups are left for explicit manual reconciliation.
+
+A current v2 manifest that lacks `expected_role_sha256` is an explicit,
+recoverable metadata migration case, not permission to infer or change
+ownership. Its install/update preview counts one manifest metadata change and
+states that role-integrity metadata will be added with ownership and backup
+entries unchanged. Only an explicitly approved `--apply` writes the role
+hashes; `status` and `verify` remain read-only and never migrate manifests.
 
 The installer cannot decide which local policy should win. It preserves
 settings outside the mapped paths; review managed-value conflicts and resolve
@@ -62,7 +78,9 @@ must still be reconciled explicitly.
 `verify` is read-only and succeeds only for a current healthy installation.
 Both reject mutating flags and validate manifest structure, path allowlists,
 installed/original-backup hashes, backup privacy, and role/profile consistency;
-neither proves runtime model availability or source freshness. See
+neither proves runtime model availability or source freshness. Recovery-required
+state is reported when retained unreferenced artifacts are present; status and
+verify preserve those bytes. See
 [Installation](installation.md) for the exact output and exit-status contract.
 
 ## Agent permissions
