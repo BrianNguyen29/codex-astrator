@@ -47,12 +47,22 @@ See the [local harness and recorded pilot evidence](evaluation.md) for exact
 commands, execution safety, and the distinction between structural and
 behavioral checks.
 
-Use a fixed four-task set for the initial comparison:
+Use the original fixed four-task set for the initial comparison, selected
+explicitly from the catalog so later extensions do not change the baseline:
 
 1. a one-file task;
 2. a multi-file feature;
 3. a cross-component bug; and
 4. a research-heavy task.
+
+The catalog also includes bounded second-stage cases for failure recovery,
+concurrency safety, security boundaries, and reviewer risk assessment. These
+cases are useful for targeted follow-up comparisons, not for silently changing
+the initial baseline. The concurrency check is a fixed stress schedule whose
+thread interleaving can vary; repeat it and report instability rather than
+calling one run deterministic. Reviewer and security conclusions still need
+the listed human review; structural or behavioral checks do not establish a
+complete threat-model or runtime assessment.
 
 Run each condition two or three times initially, with the repetition count and
 per-run/total token, time, and quota budget declared before execution. Stop at
@@ -79,17 +89,19 @@ The repository's offline harness uses a fixed task catalog in
 workflow is:
 
 ```text
-python scripts/evaluate.py prepare --output EVAL_DIR --repeats 2
-python scripts/evaluate.py check --workspace EVAL_DIR --output CHECK.json
+python scripts/evaluate.py prepare --output BASELINE_DIR --repeats 2 --task onefilebug --task multifilefeature --task statebug --task offline-research-review
+python scripts/evaluate.py check --workspace BASELINE_DIR --output CHECK.json
 python scripts/evaluate.py report --input CHECK.json --output REPORT.json
 ```
 
 The default `check` path is structural-only. An optional execution flag, when
 exposed by the installed harness, is documented by `python scripts/evaluate.py
-check --help`; it is reserved for fixed behavioral checks on the three
-code tasks. The offline research-review task remains structural-only. The
-harness does not make network calls or run arbitrary shell commands. A local
-report is an optional sanitized artifact, not hosted-CI or live-runtime proof.
+check --help`; it is reserved for fixed behavioral checks on the code tasks,
+including the failure, concurrency, and security cases. The offline research
+review and reviewer-risk tasks remain structural-only and require the explicit
+human checks in their task contracts. The harness does not make network calls
+or run arbitrary shell commands. A local report is an optional sanitized
+artifact, not hosted-CI or live-runtime proof.
 
 Interpret cached and uncached input separately. More parallel children may
 reduce elapsed time while increasing context work; the root also remains in the

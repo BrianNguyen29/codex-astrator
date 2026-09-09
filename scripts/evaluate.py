@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -81,9 +82,75 @@ def _validate_task(task: Any, seen: set[str] | None = None) -> None:
     behavior = task.get("behavior")
     behavior_kind = behavior.get("kind") if isinstance(behavior, dict) else None
     if not isinstance(behavior, dict) or not isinstance(behavior_kind, str) or behavior_kind not in {
-        "function", "slug", "state", "structural-only"
+        "function", "slug", "state", "failure", "concurrency", "security", "structural-only"
     }:
         raise EvaluationError(f"offline task {task_id} has invalid behavior checks")
+    if behavior_kind in {"failure", "security"}:
+        source = behavior.get("source")
+        if not isinstance(source, str) or not source:
+            raise EvaluationError(f"offline task {task_id} has invalid behavior source")
+        _validate_relative_path(source)
+        function_fields = (
+            ("path_function", "redaction_function") if behavior_kind == "security" else ("function",)
+        )
+        for field in function_fields:
+            function_name = behavior.get(field)
+            if not isinstance(function_name, str) or not function_name.isidentifier():
+                raise EvaluationError(f"offline task {task_id} has invalid behavior function")
+        case_fields = ("path_cases", "redaction_cases") if behavior_kind == "security" else ("cases",)
+        for field in case_fields:
+            cases = behavior.get(field)
+            if not isinstance(cases, list) or not cases:
+                raise EvaluationError(f"offline task {task_id} has invalid {field}")
+            for case in cases:
+                if not isinstance(case, dict) or not isinstance(case.get("args"), list) or "expected" not in case:
+                    raise EvaluationError(f"offline task {task_id} has an invalid {field[:-6]} case")
+    elif behavior_kind == "concurrency":
+        source = behavior.get("source")
+        class_name = behavior.get("class")
+        method = behavior.get("method")
+        cases = behavior.get("cases")
+        if (
+            not isinstance(source, str)
+            or not source
+            or not isinstance(class_name, str)
+            or not class_name.isidentifier()
+            or not isinstance(method, str)
+            or not method.isidentifier()
+            or not isinstance(cases, list)
+            or not cases
+        ):
+            raise EvaluationError(f"offline task {task_id} has invalid concurrency behavior")
+        _validate_relative_path(source)
+        for case in cases:
+            if not isinstance(case, dict):
+                raise EvaluationError(f"offline task {task_id} has an invalid concurrency case")
+            workers = case.get("workers")
+            increments = case.get("increments")
+            expected = case.get("expected")
+            if (
+                isinstance(workers, bool)
+                or not isinstance(workers, int)
+                or not 1 <= workers <= 16
+                or isinstance(increments, bool)
+                or not isinstance(increments, int)
+                or not 1 <= increments <= 1000
+                or isinstance(expected, bool)
+                or not isinstance(expected, int)
+                or expected != workers * increments
+            ):
+                raise EvaluationError(f"offline task {task_id} has invalid concurrency case")
+    human_review = task.get("human_review")
+    if human_review is not None:
+        requirements = human_review.get("requirements") if isinstance(human_review, dict) else None
+        if (
+            not isinstance(human_review, dict)
+            or human_review.get("required") is not True
+            or not isinstance(requirements, list)
+            or not requirements
+            or any(not isinstance(requirement, str) or not requirement.strip() for requirement in requirements)
+        ):
+            raise EvaluationError(f"offline task {task_id} has invalid human review requirements")
     files = task.get("files")
     invariants = task.get("invariants")
     if not isinstance(files, list) or not files or not isinstance(invariants, list) or not invariants:
@@ -99,6 +166,14 @@ def _validate_task(task: Any, seen: set[str] | None = None) -> None:
         if not isinstance(entry.get("content"), str):
             raise EvaluationError(f"offline task {task_id} has invalid file content")
         file_paths.add(relative)
+    behavior_sources: list[str] = []
+    if behavior_kind in {"function", "failure", "concurrency", "security"}:
+        behavior_sources.append(behavior["source"])
+    elif behavior_kind == "state":
+        behavior_sources.extend((behavior.get("source", ""), behavior.get("controller", "")))
+    for source in behavior_sources:
+        if not isinstance(source, str) or source not in file_paths:
+            raise EvaluationError(f"offline task {task_id} behavior refers to an unknown file")
     invariant_ids: set[str] = set()
     for invariant in invariants:
         if not isinstance(invariant, dict):
@@ -204,6 +279,13 @@ def _task_map(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {task["id"]: task for task in config["tasks"]}
 
 
+def _human_review_metadata(task: dict[str, Any]) -> dict[str, Any] | None:
+    review = task.get("human_review")
+    if review is None:
+        return None
+    return {"required": True, "requirements": list(review["requirements"])}
+
+
 def _selected_tasks(config: dict[str, Any], task_ids: list[str] | None) -> list[dict[str, Any]]:
     tasks = _task_map(config)
     if not task_ids:
@@ -246,6 +328,11 @@ def prepare(output: Path, task_ids: list[str] | None = None, repeats: int = 2) -
                     "",
                 ]
             )
+            review = task.get("human_review")
+            if review is not None:
+                task_text += "\nHuman review required before acceptance:\n" + "\n".join(
+                    f"- {requirement}" for requirement in review["requirements"]
+                ) + "\n"
             _write_new_text(workspace / "TASK.md", task_text)
             _write_json_new(
                 workspace / METADATA_NAME,
@@ -381,6 +468,55 @@ def _call_and_assert(function: Any, args: list[Any], expected: Any) -> bool:
     return True
 
 
+def _function_behavior_checks(
+    module: types.ModuleType, function_name: str, cases: list[dict[str, Any]], prefix: str
+) -> list[dict[str, Any]]:
+    function = module.__dict__.get(function_name)
+    return [
+        {
+            "id": f"{prefix}-{index}",
+            "passed": _call_and_assert(function, case["args"], case["expected"])
+            if callable(function)
+            else False,
+        }
+        for index, case in enumerate(cases, start=1)
+    ]
+
+
+def _concurrent_counter_check(
+    session_type: Any, method_name: str, workers: int, increments: int, expected: int
+) -> bool:
+    """Run a bounded fixed stress case; scheduling is intentionally not deterministic."""
+    if not isinstance(session_type, type):
+        return False
+    try:
+        session = session_type()
+        operation = getattr(session, method_name, None)
+        if not callable(operation):
+            return False
+        barrier = threading.Barrier(workers)
+        errors: list[Exception] = []
+
+        def run_worker() -> None:
+            try:
+                barrier.wait(timeout=2)
+                for _ in range(increments):
+                    operation()
+            except Exception as exc:  # keep failures inside the synthetic child
+                errors.append(exc)
+
+        threads = [threading.Thread(target=run_worker, daemon=True) for _ in range(workers)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=3)
+        if errors or any(thread.is_alive() for thread in threads):
+            return False
+        return getattr(session, "value", object()) == expected
+    except Exception:
+        return False
+
+
 def _behavioral_checks(task: dict[str, Any], workspace: Path) -> list[dict[str, Any]]:
     """Run only fixed tests for the named synthetic task kind."""
     behavior = task["behavior"]
@@ -390,12 +526,10 @@ def _behavioral_checks(task: dict[str, Any], workspace: Path) -> list[dict[str, 
     modules: dict[str, Any] = {}
     if kind == "function":
         module = _execute_module(workspace, behavior["source"], "synthetic.main", "synthetic", modules)
-        function = module.__dict__.get(behavior["function"])
-        return [
-            {"id": f"behavior-case-{index}", "passed": _call_and_assert(function, case["args"], case["expected"])
-             if callable(function) else False}
-            for index, case in enumerate(behavior["cases"], start=1)
-        ]
+        return _function_behavior_checks(module, behavior["function"], behavior["cases"], "behavior-case")
+    if kind == "failure":
+        module = _execute_module(workspace, behavior["source"], "synthetic.failure", "synthetic", modules)
+        return _function_behavior_checks(module, behavior["function"], behavior["cases"], "behavior-failure")
     if kind == "slug":
         slug_module = _execute_module(workspace, "src/slug.py", "synthetic.slug", "synthetic", modules)
         report_module = _execute_module(workspace, "src/report.py", "synthetic.report", "synthetic", modules)
@@ -439,6 +573,36 @@ def _behavioral_checks(task: dict[str, Any], workspace: Path) -> list[dict[str, 
                         passed = passed and session.state == case["expected"]
             results.append({"id": f"behavior-case-{index}", "passed": passed})
         return results
+    if kind == "concurrency":
+        module = _execute_module(workspace, behavior["source"], "synthetic.concurrency", "synthetic", modules)
+        session_type = module.__dict__.get(behavior["class"])
+        return [
+            {
+                "id": f"behavior-concurrency-{index}",
+                "passed": _concurrent_counter_check(
+                    session_type,
+                    behavior["method"],
+                    case["workers"],
+                    case["increments"],
+                    case["expected"],
+                ),
+            }
+            for index, case in enumerate(behavior["cases"], start=1)
+        ]
+    if kind == "security":
+        module = _execute_module(workspace, behavior["source"], "synthetic.security", "synthetic", modules)
+        results = _function_behavior_checks(
+            module, behavior["path_function"], behavior["path_cases"], "behavior-path"
+        )
+        results.extend(
+            _function_behavior_checks(
+                module,
+                behavior["redaction_function"],
+                behavior["redaction_cases"],
+                "behavior-redaction",
+            )
+        )
+        return results
     raise EvaluationError("unsupported fixed behavior check")
 
 
@@ -451,6 +615,16 @@ def _behavior_ids(task: dict[str, Any]) -> set[str]:
         return slug_ids | {f"behavior-label-{index}" for index, _ in enumerate(behavior["label_cases"], start=1)}
     if behavior["kind"] == "state":
         return {f"behavior-case-{index}" for index, _ in enumerate(behavior["cases"], start=1)}
+    if behavior["kind"] == "failure":
+        return {f"behavior-failure-{index}" for index, _ in enumerate(behavior["cases"], start=1)}
+    if behavior["kind"] == "concurrency":
+        return {f"behavior-concurrency-{index}" for index, _ in enumerate(behavior["cases"], start=1)}
+    if behavior["kind"] == "security":
+        path_ids = {f"behavior-path-{index}" for index, _ in enumerate(behavior["path_cases"], start=1)}
+        redaction_ids = {
+            f"behavior-redaction-{index}" for index, _ in enumerate(behavior["redaction_cases"], start=1)
+        }
+        return path_ids | redaction_ids
     return set()
 
 
@@ -509,7 +683,9 @@ def check(workspace: Path, *, execute: bool = False) -> dict[str, Any]:
     for task_workspace, task_id, repeat in workspaces:
         invariant_results: list[dict[str, Any]] = []
         behavior_ids = _behavior_ids(tasks[task_id])
-        invariants = [] if execute and behavior_ids else tasks[task_id]["invariants"]
+        invariants = tasks[task_id]["invariants"]
+        if execute and behavior_ids and tasks[task_id]["behavior"]["kind"] != "concurrency":
+            invariants = []
         for invariant in invariants:
             invariant_passed = _run_invariant(task_workspace, invariant)
             invariant_results.append({"id": invariant["id"], "passed": invariant_passed})
@@ -524,9 +700,11 @@ def check(workspace: Path, *, execute: bool = False) -> dict[str, Any]:
             total += len(behavioral)
             passed += sum(int(item["passed"]) for item in behavioral)
         outcome = "passed" if all(item["passed"] for item in checks) else "failed"
-        task_results.append(
-            {"task_id": task_id, "repeat": repeat, "outcome": outcome, "checks": checks}
-        )
+        task_result = {"task_id": task_id, "repeat": repeat, "outcome": outcome, "checks": checks}
+        human_review = _human_review_metadata(tasks[task_id])
+        if human_review is not None:
+            task_result["human_review"] = human_review
+        task_results.append(task_result)
     failed = total - passed
     return {
         "schema_version": SCHEMA_VERSION,
@@ -597,6 +775,8 @@ def _validated_check_payload(payload: dict[str, Any], tasks: dict[str, dict[str,
         known = behavior_ids if mode == "behavioral" and behavior_ids else {
             item["id"] for item in tasks[task_id]["invariants"]
         }
+        if mode == "behavioral" and tasks[task_id]["behavior"]["kind"] == "concurrency":
+            known = known | {item["id"] for item in tasks[task_id]["invariants"]}
         checks: list[dict[str, Any]] = []
         seen: set[str] = set()
         for raw_check in raw_checks:
@@ -610,14 +790,16 @@ def _validated_check_payload(payload: dict[str, Any], tasks: dict[str, dict[str,
             checks.append({"id": check_id, "passed": passed})
         if seen != known:
             raise EvaluationError("report input does not contain the complete fixed check set")
-        validated.append(
-            {
-                "task_id": task_id,
-                "repeat": repeat,
-                "outcome": "passed" if all(item["passed"] for item in checks) else "failed",
-                "checks": checks,
-            }
-        )
+        validated_task = {
+            "task_id": task_id,
+            "repeat": repeat,
+            "outcome": "passed" if all(item["passed"] for item in checks) else "failed",
+            "checks": checks,
+        }
+        human_review = _human_review_metadata(tasks[task_id])
+        if human_review is not None:
+            validated_task["human_review"] = human_review
+        validated.append(validated_task)
     return validated
 
 

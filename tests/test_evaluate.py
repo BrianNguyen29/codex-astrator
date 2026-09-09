@@ -13,18 +13,33 @@ import evaluate
 
 
 class EvaluationTests(unittest.TestCase):
+    BASELINE_TASKS = ["onefilebug", "multifilefeature", "statebug", "offline-research-review"]
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="astrator eval ")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name) / "cases"
 
     def prepare(self, task=None):
-        evaluate.prepare(self.root, [task] if task else None, 2)
+        evaluate.prepare(self.root, [task] if task else self.BASELINE_TASKS, 2)
         return self.root / (task or "onefilebug") / "repeat-01"
 
-    def test_default_prepares_four_tasks_twice_without_overwrite(self):
+    def test_default_prepares_catalog_tasks_twice_without_overwrite(self):
         result = evaluate.prepare(self.root)
-        self.assertEqual(result["task_count"], 8)
+        self.assertEqual(result["task_count"], 16)
+        self.assertEqual(
+            set(result["tasks"]),
+            {
+                "onefilebug",
+                "multifilefeature",
+                "statebug",
+                "offline-research-review",
+                "failure-recovery",
+                "concurrency-counter",
+                "security-boundary",
+                "reviewer-risk",
+            },
+        )
         before = (self.root / "manifest.json").read_bytes()
         with self.assertRaises(evaluate.EvaluationError):
             evaluate.prepare(self.root)
@@ -74,12 +89,96 @@ class EvaluationTests(unittest.TestCase):
         (workspace / "src/state.py").write_text("while True: pass\n", encoding="utf-8")
         self.assertEqual(evaluate.check(workspace, execute=True)["outcome"], "failed")
 
+    def test_failure_behavior_checks_retry_policy(self):
+        workspace = self.prepare("failure-recovery")
+        source = workspace / "src/retry.py"
+        source.write_text(
+            "TRANSIENT_ERRORS = {'timeout', 'temporarily_unavailable'}\n"
+            "MAX_ATTEMPTS = 3\n"
+            "def should_retry(error_code, attempt):\n"
+            "    return isinstance(error_code, str) and error_code in TRANSIENT_ERRORS and 0 <= attempt < MAX_ATTEMPTS\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(evaluate.check(workspace, execute=True)["outcome"], "passed")
+        source.write_text("def should_retry(error_code, attempt): return True\n", encoding="utf-8")
+        self.assertEqual(evaluate.check(workspace, execute=True)["outcome"], "failed")
+
+    def test_concurrency_behavior_checks_exact_count_and_forced_race(self):
+        workspace = self.prepare("concurrency-counter")
+        source = workspace / "src/counter.py"
+        source.write_text(
+            "import threading\n"
+            "class Counter:\n"
+            "    def __init__(self):\n"
+            "        self.value = 0\n"
+            "        self._lock = threading.Lock()\n"
+            "    def increment(self):\n"
+            "        with self._lock:\n"
+            "            self.value += 1\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(evaluate.check(workspace, execute=True)["outcome"], "passed")
+        source.write_text(
+            "class Counter:\n"
+            "    def __init__(self): self.value = 0\n"
+            "    def increment(self): self.value += 1\n",
+            encoding="utf-8",
+        )
+        result = evaluate.check(workspace, execute=True)
+        self.assertEqual(result["outcome"], "failed")
+        self.assertFalse(next(check for check in result["tasks"][0]["checks"] if check["id"] == "counter-uses-locking")["passed"])
+
+    def test_security_behavior_checks_untrusted_paths_and_redaction(self):
+        workspace = self.prepare("security-boundary")
+        source = workspace / "src/security.py"
+        source.write_text(
+            "def is_safe_relative_path(value):\n"
+            "    if not isinstance(value, str) or not value or '\\\\' in value or ':' in value or value.startswith('/'):\n"
+            "        return False\n"
+            "    parts = value.split('/')\n"
+            "    return all(part not in {'', '.', '..'} for part in parts)\n"
+            "\n"
+            "def redact_secret(value):\n"
+            "    return '[REDACTED]'\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(evaluate.check(workspace, execute=True)["outcome"], "passed")
+        source.write_text(
+            "def is_safe_relative_path(value): return True\n"
+            "def redact_secret(value): return value\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(evaluate.check(workspace, execute=True)["outcome"], "failed")
+
+    def test_reviewer_task_emits_human_review_requirements_and_stays_structural(self):
+        workspace = self.prepare("reviewer-risk")
+        task_text = (workspace / "TASK.md").read_text(encoding="utf-8")
+        self.assertIn("Human review required before acceptance:", task_text)
+        self.assertIn("Confirm every finding is supported", task_text)
+        result = evaluate.check(workspace, execute=True)
+        self.assertEqual(result["verification"]["behavioral_outcome"], "unavailable")
+        self.assertEqual(result["outcome"], "failed")
+        (workspace / "REVIEW.md").write_text(
+            "## Findings\nThe supplied facts are limited.\n"
+            "## Evidence\nNo browsing; this uses supplied facts only.\n"
+            "## Human review required\nStatic checks do not prove runtime compatibility.\n",
+            encoding="utf-8",
+        )
+        result = evaluate.check(workspace, execute=True)
+        self.assertEqual(result["verification"]["mode"], "behavioral")
+        self.assertEqual(result["verification"]["behavioral_outcome"], "unavailable")
+        self.assertEqual(result["outcome"], "passed")
+        self.assertTrue(result["tasks"][0]["human_review"]["required"])
+        report = evaluate.build_report(result)
+        self.assertTrue(report["tasks"][0]["human_review"]["required"])
+
     def test_report_complete_checks_duplicates_and_privacy(self):
         workspace = self.prepare("onefilebug")
         result = evaluate.check(workspace, execute=True)
         report = evaluate.build_report(result, usage={"output_tokens": 20, "reasoning_tokens": 5})
         self.assertEqual(report["execution"]["model"], "unavailable")
         self.assertEqual(report["measurements"]["usage"]["output_tokens"], 20)
+        self.assertNotIn("human_review", report["tasks"][0])
         self.assertNotIn(str(workspace), json.dumps(report))
         for mutation in ("missing", "duplicate", "private"):
             bad = copy.deepcopy(result)

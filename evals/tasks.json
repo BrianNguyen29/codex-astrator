@@ -190,6 +190,221 @@
           "value": "No browsing"
         }
       ]
+    },
+    {
+      "id": "failure-recovery",
+      "kind": "failure-handling",
+      "prompt": "Implement should_retry in src/retry.py. Retry only transient errors (timeout and temporarily_unavailable), and only for zero-based attempts 0 through 2. Return false for permanent or unknown errors and invalid attempts. Keep the function pure: do not use a shell, network, filesystem, or sleep.",
+      "behavior": {
+        "kind": "failure",
+        "source": "src/retry.py",
+        "function": "should_retry",
+        "cases": [
+          {"args": ["timeout", 0], "expected": true},
+          {"args": ["timeout", 2], "expected": true},
+          {"args": ["timeout", 3], "expected": false},
+          {"args": ["temporarily_unavailable", 1], "expected": true},
+          {"args": ["permission_denied", 0], "expected": false},
+          {"args": ["unknown", 1], "expected": false},
+          {"args": ["timeout", -1], "expected": false},
+          {"args": [null, 0], "expected": false}
+        ]
+      },
+      "files": [
+        {
+          "path": "src/retry.py",
+          "content": "TRANSIENT_ERRORS = {\"timeout\", \"temporarily_unavailable\"}\nMAX_ATTEMPTS = 3\n\ndef should_retry(error_code: str, attempt: int) -> bool:\n    return True\n"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "retry-limits-attempts",
+          "type": "contains",
+          "path": "src/retry.py",
+          "value": "MAX_ATTEMPTS = 3"
+        },
+        {
+          "id": "retry-uses-transient-set",
+          "type": "contains",
+          "path": "src/retry.py",
+          "value": "TRANSIENT_ERRORS"
+        },
+        {
+          "id": "retry-no-unconditional-true",
+          "type": "not_contains",
+          "path": "src/retry.py",
+          "value": "return True"
+        }
+      ]
+    },
+    {
+      "id": "concurrency-counter",
+      "kind": "concurrency-safety",
+      "prompt": "Make Counter.increment in src/counter.py safe when called by multiple threads. Preserve the public class and method names and ensure value equals the exact number of completed increments. Protect the entire read-modify-write with an explicit standard-library Lock or RLock; do not rely on the GIL or scheduler behavior. Keep this local and deterministic in scope: no network, subprocess, or filesystem behavior.",
+      "behavior": {
+        "kind": "concurrency",
+        "source": "src/counter.py",
+        "class": "Counter",
+        "method": "increment",
+        "schedule": "stress",
+        "cases": [
+          {"workers": 4, "increments": 50, "expected": 200},
+          {"workers": 8, "increments": 100, "expected": 800}
+        ]
+      },
+      "files": [
+        {
+          "path": "src/counter.py",
+          "content": "import time\n\nclass Counter:\n    def __init__(self) -> None:\n        self.value = 0\n\n    def increment(self) -> None:\n        current = self.value\n        time.sleep(0)\n        self.value = current + 1\n"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "counter-uses-locking",
+          "type": "contains",
+          "path": "src/counter.py",
+          "value": "Lock"
+        },
+        {
+          "id": "counter-updates-value",
+          "type": "contains",
+          "path": "src/counter.py",
+          "value": "self.value"
+        },
+        {
+          "id": "counter-no-sleep",
+          "type": "not_contains",
+          "path": "src/counter.py",
+          "value": "time.sleep"
+        }
+      ],
+      "human_review": {
+        "required": true,
+        "requirements": [
+          "Confirm an explicit Lock or RLock protects the complete read-modify-write operation.",
+          "Confirm the implementation does not rely on the GIL or a particular thread schedule.",
+          "Confirm the bounded stress schedule is repeated and its result is not treated as proof of race freedom."
+        ]
+      }
+    },
+    {
+      "id": "security-boundary",
+      "kind": "security-boundary",
+      "prompt": "Implement the pure helpers in src/security.py. is_safe_relative_path must accept ordinary workspace-relative paths but reject empty, absolute, traversal, repeated-separator, backslash, drive-prefixed, and non-string values. redact_secret must return the literal [REDACTED] without echoing any supplied secret. Do not access the filesystem or network.",
+      "behavior": {
+        "kind": "security",
+        "source": "src/security.py",
+        "path_function": "is_safe_relative_path",
+        "path_cases": [
+          {"args": ["src/config.json"], "expected": true},
+          {"args": ["src/../config.json"], "expected": false},
+          {"args": ["../secrets.txt"], "expected": false},
+          {"args": ["/tmp/secrets.txt"], "expected": false},
+          {"args": ["a\\b"], "expected": false},
+          {"args": ["src//file.txt"], "expected": false},
+          {"args": ["C:/secrets.txt"], "expected": false},
+          {"args": [""], "expected": false},
+          {"args": [null], "expected": false}
+        ],
+        "redaction_function": "redact_secret",
+        "redaction_cases": [
+          {"args": ["sk-live-abc123"], "expected": "[REDACTED]"},
+          {"args": ["password"], "expected": "[REDACTED]"},
+          {"args": [""], "expected": "[REDACTED]"}
+        ]
+      },
+      "human_review": {
+        "required": true,
+        "requirements": [
+          "Confirm the accepted path grammar matches the consuming application.",
+          "Confirm redaction is applied before secrets reach logs or reports.",
+          "Confirm behavioral checks do not substitute for a threat-model review."
+        ]
+      },
+      "files": [
+        {
+          "path": "src/security.py",
+          "content": "def is_safe_relative_path(value: str) -> bool:\n    return True\n\ndef redact_secret(value: str) -> str:\n    return value\n"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "security-rejects-traversal",
+          "type": "not_contains",
+          "path": "src/security.py",
+          "value": "return True"
+        },
+        {
+          "id": "security-redacts-secret",
+          "type": "contains",
+          "path": "src/security.py",
+          "value": "[REDACTED]"
+        },
+        {
+          "id": "security-no-filesystem",
+          "type": "not_contains",
+          "path": "src/security.py",
+          "value": "open("
+        }
+      ]
+    },
+    {
+      "id": "reviewer-risk",
+      "kind": "reviewer-security-review",
+      "prompt": "Review the supplied facts and write REVIEW.md. This is a semantic reviewer task: include Findings, Evidence, and Human review required sections; cite only supplied facts; state No browsing; and explicitly say that static checks do not prove runtime compatibility or complete security. A human must confirm the evidence, disclosure boundaries, and bounded wording before acceptance.",
+      "behavior": {
+        "kind": "structural-only"
+      },
+      "human_review": {
+        "required": true,
+        "requirements": [
+          "Confirm every finding is supported by facts.md and no fact was invented.",
+          "Confirm no credentials, private paths, prompts, or raw logs are disclosed.",
+          "Confirm security and runtime conclusions are explicitly bounded and require human judgment."
+        ]
+      },
+      "files": [
+        {
+          "path": "facts.md",
+          "content": "# Supplied facts\n\n- The installer validates workspace-relative paths before file operations.\n- The runtime check can execute reviewed synthetic code only when explicitly requested.\n- Static checks do not establish runtime compatibility or complete security.\n"
+        },
+        {
+          "path": "REVIEW.md",
+          "content": ""
+        }
+      ],
+      "invariants": [
+        {
+          "id": "reviewer-has-findings",
+          "type": "contains",
+          "path": "REVIEW.md",
+          "value": "## Findings"
+        },
+        {
+          "id": "reviewer-has-evidence",
+          "type": "contains",
+          "path": "REVIEW.md",
+          "value": "## Evidence"
+        },
+        {
+          "id": "reviewer-requires-human",
+          "type": "contains",
+          "path": "REVIEW.md",
+          "value": "## Human review required"
+        },
+        {
+          "id": "reviewer-no-browsing",
+          "type": "contains",
+          "path": "REVIEW.md",
+          "value": "No browsing"
+        },
+        {
+          "id": "reviewer-bounds-claims",
+          "type": "contains",
+          "path": "REVIEW.md",
+          "value": "do not prove"
+        }
+      ]
     }
   ]
 }

@@ -113,6 +113,7 @@ class StateCommandTests(unittest.TestCase):
         self.assertEqual(missing.returncode, 2)
         self.assertIn("state=drifted", missing.stdout)
 
+    @unittest.skipIf(sys.platform == "win32", "Windows safely refuses installs requiring backups")
     def test_legacy_and_corrupt_backup_are_reported_without_mutation(self) -> None:
         config = self.target / ".codex" / "config.toml"
         config.parent.mkdir()
@@ -128,7 +129,7 @@ class StateCommandTests(unittest.TestCase):
         self.assertIn("state=legacy", legacy.stdout)
         self.assertEqual(manifest_path.read_bytes(), before)
 
-        manifest["version"] = 2
+        manifest["version"] = 3
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         backup_rel = next(entry["backup"] for entry in manifest["entries"] if entry.get("backup"))
         self.target.joinpath(*backup_rel.split("/")).write_text("corrupt", encoding="utf-8")
@@ -159,7 +160,8 @@ class StateCommandTests(unittest.TestCase):
         self.assertEqual(removed.returncode, 0, removed.stderr)
         self.assertEqual(role.read_bytes(), altered)
 
-    def test_old_v2_without_role_hashes_previews_and_applies_metadata_migration(self) -> None:
+    @unittest.skipIf(sys.platform == "win32", "Windows safely refuses installs requiring backups")
+    def test_v2_manifest_blocks_migration_without_mutation(self) -> None:
         config = self.target / ".codex" / "config.toml"
         config.parent.mkdir(parents=True)
         config.write_bytes(b"# original config\n")
@@ -176,13 +178,15 @@ class StateCommandTests(unittest.TestCase):
         backup_rel = next(entry["backup"] for entry in manifest["entries"] if entry.get("backup"))
         backup_path = self.target.joinpath(*backup_rel.split("/"))
         backup_before = backup_path.read_bytes()
-        manifest.pop("expected_role_sha256")
+        manifest["version"] = 2
+        manifest.pop("original_mode", None)
+        for entry in manifest["entries"]:
+            entry.pop("original_mode", None)
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         before = {path: path.read_bytes() for path in self.target.rglob("*") if path.is_file()}
         status = self.run_cli("status")
         self.assertEqual(status.returncode, 2)
-        self.assertIn("state=unverified", status.stdout)
-        self.assertIn("roles=unknown", status.stdout)
+        self.assertIn("state=legacy", status.stdout)
         self.assertEqual(before, {path: path.read_bytes() for path in self.target.rglob("*") if path.is_file()})
 
         preview = subprocess.run(
@@ -193,30 +197,17 @@ class StateCommandTests(unittest.TestCase):
             text=True,
             capture_output=True,
         )
-        self.assertEqual(preview.returncode, 0, preview.stderr)
-        self.assertIn("PREVIEW: 1 file change(s)", preview.stdout)
-        self.assertIn("add role integrity metadata", preview.stdout)
-        self.assertIn("ownership and backups unchanged", preview.stdout)
-        self.assertNotIn("sha256", preview.stdout.lower())
+        self.assertEqual(preview.returncode, 2)
+        self.assertIn("legacy installer manifest safety version", preview.stderr)
         self.assertEqual(before, {path: path.read_bytes() for path in self.target.rglob("*") if path.is_file()})
 
         migrated = self.install()
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        updated = json.loads(manifest_path.read_text(encoding="utf-8"))
-        self.assertEqual(updated["entries"], manifest["entries"])
-        self.assertEqual(updated["managed_agent_paths"], manifest["managed_agent_paths"])
-        self.assertNotIn(
-            ".codex/agents/worker.toml",
-            {entry["path"] for entry in updated["entries"]},
-        )
+        self.assertEqual(migrated.returncode, 2)
+        self.assertIn("legacy installer manifest safety version", migrated.stderr)
+        self.assertEqual(manifest_path.read_bytes(), before[manifest_path])
         self.assertEqual(backup_path.read_bytes(), backup_before)
-        self.assertEqual(
-            set(updated["expected_role_sha256"]),
-            set(updated["managed_agent_paths"]),
-        )
-        self.assertEqual(self.run_cli("verify").returncode, 0)
 
-    def test_old_v2_without_role_hashes_remains_directly_uninstallable(self) -> None:
+    def test_v2_manifest_is_not_directly_uninstallable(self) -> None:
         import sys as _sys
         _sys.path.insert(0, str(ROOT / "scripts"))
         import install as installer
@@ -224,15 +215,18 @@ class StateCommandTests(unittest.TestCase):
         self.assertEqual(self.install().returncode, 0)
         manifest_path = self.target / ".codex" / "astrator-manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest.pop("expected_role_sha256")
+        manifest["version"] = 2
+        for entry in manifest["entries"]:
+            entry.pop("original_mode", None)
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         loaded_path, loaded, snapshot = installer._load_manifest(self.target, "project")
         self.assertIsNotNone(loaded)
 
-        installer._uninstall(
-            self.target, "project", loaded_path, loaded, snapshot, apply=True
-        )
-        self.assertFalse(manifest_path.exists())
+        with self.assertRaisesRegex(installer.InstallerError, "legacy installer manifest"):
+            installer._uninstall(
+                self.target, "project", loaded_path, loaded, snapshot, apply=True
+            )
+        self.assertTrue(manifest_path.exists())
 
     def test_present_role_hash_map_must_be_complete_and_well_formed(self) -> None:
         self.assertEqual(self.install().returncode, 0)

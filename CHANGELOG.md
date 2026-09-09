@@ -13,18 +13,29 @@ All notable changes are recorded here. The project is preparing a planned
 - The validation workflow now keeps independent Windows, Ubuntu, and macOS
   Python 3.11 jobs and adds only one Ubuntu Python 3.12 job with
   `fail-fast: false` (four jobs total). An [observed run at exact revision
-  `96cbc6a`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34314915552)
-  passed all three Python 3.11 jobs; it does not cover the added Ubuntu 3.12
-  job or verify the current modified workflow.
+  `29d0ae1`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34335263659)
+  passed all four jobs; it predates this permission and workflow hardening
+  and does not verify the modified tree.
 - Install/update and uninstall now block on unrecognized recovery artifacts,
   including in read-only previews, preserving current files, manifests, and
   recovery bytes until manual reconciliation. The apply guard repeats after
   the per-target lock and before writes or deletes; `--replace-existing` does
   not bypass it.
-- Current v2 manifests without `expected_role_sha256` now have an explicit
-  metadata-only install/update migration. The preview counts the manifest
-  change, and apply records role hashes while preserving ownership and backup
-  entries; `status` and `verify` never migrate manifests.
+- Manifest v3 adds original POSIX permission modes. Versions 1 and 2 now
+  require manual reconciliation because they cannot prove original modes;
+  this supersedes the earlier v2 role-hash-only migration. Read-only checks
+  never migrate manifests.
+- POSIX backup directories/files use private modes and temporary files start
+  private before writes. Unsupported ownership/xattr handling and Windows
+  existing-file ACL backup/restore fail closed. No-op apply repairs a missing
+  backup ignore rule; uninstall rollback leaves untouched files untouched.
+- Workflow actions are pinned to verified full commit SHAs and the workflow
+  token is limited to `contents: read`. These source changes do not themselves
+  configure GitHub branch protection or prove a release candidate passed CI.
+- The synthetic evaluation catalog adds failure/retry, concurrency stress,
+  security-boundary, and reviewer-risk cases. Existing four-task comparisons
+  remain explicitly selectable; semantic human-review requirements are
+  retained in reports. No live performance improvement is claimed.
 
 ### Added
 

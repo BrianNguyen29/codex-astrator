@@ -30,9 +30,9 @@ Current local implementation and pilot evidence is recorded in
       jobs: Windows/Python 3.11, Ubuntu/Python 3.11, Ubuntu/Python 3.12, and
       macOS/Python 3.11. Record the run revision and job conclusions; do not
       infer hosted results before this step. The [observed run at exact
-      revision `96cbc6a`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34314915552)
-      passed the three Python 3.11 jobs, but predates the added Ubuntu 3.12
-      entry and does not satisfy this four-job gate.
+      revision `29d0ae1`](https://github.com/BrianNguyen29/codex-astrator/actions/runs/34335263659)
+      passed all four jobs, but predates the current permission and workflow
+      hardening and does not validate the next release candidate.
 - [ ] Review preview output for project and global scopes using disposable
       targets; apply only after reviewing exact paths and collisions.
 - [ ] On disposable targets, exercise read-only `status` for absent and healthy
@@ -53,19 +53,36 @@ Current local implementation and pilot evidence is recorded in
       allowed. Treat failures as release blockers; if Git is unavailable,
       record tracked-content detection as unavailable; verify rollback retains
       a newly created protective file; do not assume undocumented flags.
+- [ ] Verify ordinary POSIX mode preservation and private backup/temp modes,
+      including rollback and metadata-only races. Resolve unsupported Windows
+      ACL preservation before claiming full Windows backup/restore support;
+      fail-closed restrictions are not successful preservation tests.
 - [ ] Confirm the compatibility matrix still distinguishes Windows/Python
       3.11, Ubuntu/Python 3.11, Ubuntu/Python 3.12, and macOS/Python 3.11
       workflow coverage from unverified live Codex runtime behavior.
 - [ ] Sanitize every report: never upload configs, manifests, backups, logs,
       prompts, credentials, or personal paths.
+- [ ] Complete a budgeted, repeated root-only versus Astrator comparison on
+      the same fixed corpus after the runtime smoke gate passes. Record real
+      outcomes and exposed usage; missing telemetry is unavailable, not zero.
+      Include failure, concurrency, security, and reviewer cases in broader
+      evaluation; semantic reviewer correctness needs human assessment.
+      Do not infer performance gains from offline harness tests.
 
 ## Tag gate
 
+- [ ] Protect `main` with the four exact matrix status checks required and
+      up-to-date branches; verify the effective GitHub rule rather than only
+      recording intended settings. Disallow force pushes and branch deletion.
+- [ ] Pin workflow actions to verified full commit SHAs and give the workflow
+      only the permissions it needs. Re-run all four jobs after workflow edits.
 - [ ] Confirm `CHANGELOG.md` still says `v0.1.0` is planned and move only the
       validated entries into the release section.
 - [ ] After every required gate passes, select the exact clean revision for the
       annotated tag; until then, tag and archive reproducibility remain planned
       and unexecuted.
 - [ ] Create the annotated `v0.1.0` tag only after all required checks pass.
+      Sign it when an authorized signing identity is configured; never create
+      a key or claim a signature merely to satisfy this checklist.
 - [ ] Verify the tag resolves to the selected commit and repeat the archive
       file-list/checksum check from the tag before publishing any artifact.

@@ -38,6 +38,31 @@ files and recovery bytes manually before retrying.
 
 ## Approval boundaries
 
+### Filesystem permission limits
+
+The v3 implementation preserves ordinary POSIX `rwx` mode bits for supported
+existing files through replacement, rollback, and original-file restoration.
+It is not a general ACL, ownership, extended-attribute, or security-label
+backup tool. Files with a different effective owner/group, special mode bits,
+or detectable extended attributes are refused for replacement. Use the same
+OS user/group for installation and restoration. Keep the target quiescent;
+the cooperating lock cannot defeat a hostile filesystem race.
+
+New POSIX backup directories are private (`0700`) and backup files are `0600`.
+Temporary files begin private before any bytes are written. Existing overly
+permissive backup paths are refused, not silently chmodded. Read-only checks
+must not create or harden directories. Git ignore protection prevents ordinary
+staging; it is not a confidentiality boundary on its own.
+
+Windows ACL preservation is not implemented. Operations that need to replace
+or back up existing user files fail closed; Windows support is restricted to
+fresh-target installation and supported no-op/created-file operations. This
+restriction does not prove Windows ACL backup/restore or secure ACL rollback.
+Full Windows permission-preservation remains a release limitation, not a
+passing gate. Do not bypass the refusal with `--replace-existing`.
+
+### User authorization
+
 Review the dry-run before `--apply`. Existing files require the explicit
 `--replace-existing` option; do not use it casually on a global config or an
 existing instruction file. `uninstall --apply` is destructive within the
@@ -51,12 +76,12 @@ rechecks the snapshot immediately before writing. Legacy safety-version
 manifests block automatic install/update and uninstall; their current files and
 backups are left for explicit manual reconciliation.
 
-A current v2 manifest that lacks `expected_role_sha256` is an explicit,
-recoverable metadata migration case, not permission to infer or change
-ownership. Its install/update preview counts one manifest metadata change and
-states that role-integrity metadata will be added with ownership and backup
-entries unchanged. Only an explicitly approved `--apply` writes the role
-hashes; `status` and `verify` remain read-only and never migrate manifests.
+Manifest v3 adds original POSIX permission-mode metadata. Versions 1 and 2
+remain readable as legacy state but cannot be updated or automatically
+restored/uninstalled: neither the installed file's mode nor the backup's mode
+proves the original permissions. The earlier v2 role-hash-only migration is
+therefore no longer supported. Manual reconciliation must preserve both
+content and intended permissions; read-only commands never migrate manifests.
 
 The installer cannot decide which local policy should win. It preserves
 settings outside the mapped paths; review managed-value conflicts and resolve
